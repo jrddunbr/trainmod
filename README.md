@@ -1,6 +1,6 @@
 # jrddunbr's train mod
 
-jrddunbr's train mod 0.2.17 runs on Minecraft Java Edition 26.3 with NeoForge 26.3.0.115 and Java 25. Install `trainmod-0.2.17.jar` in the `mods` folder on the client and server. WorldEdit 7.4.6 is optional.
+jrddunbr's train mod runs on Minecraft Java Edition 26.3 with NeoForge 26.3.0.115 and Java 25. Install the `trainmod-<version>.jar` from [GitHub Releases](https://github.com/jrddunbr/trainmod/releases) in the `mods` folder on the client and server. WorldEdit 7.4.6 is optional.
 
 This project uses the [MIT License](LICENSE).
 
@@ -45,3 +45,7 @@ Select the entire piece, including its support blocks, when copying track. Paste
 `./gradlew build` runs the geometry tests and builds the JAR in `build/libs/`. Use `./gradlew runClient` for a development client with PulseAudio and the offline username `jrddunbr`. Use `./gradlew runClient -PclientAuth` to sign in with DevLogin and load your Minecraft account skin.
 
 Use `./gradlew runGameTestServer` for the in-world tests. Place the NeoForge WorldEdit 7.4.6 JAR in `run/game-test/mods/` to include the WorldEdit compatibility test.
+
+A clean checkout at a version tag such as `v0.2.18` builds `trainmod-0.2.18.jar` and reports `0.2.18` in NeoForge. Development builds append the number of commits since the nearest reachable version tag, the branch, and the short commit hash, as in `0.2.17-dev.1.feature-build.g675da8b79061`. Uncommitted changes add `.dirty`.
+
+To publish a release, create and push a `vMAJOR.MINOR.PATCH` tag on the commit you want to release. GitHub Actions builds and tests that commit with Java 25, then publishes the JAR and a changelog based on commits since the previous reachable version tag.
