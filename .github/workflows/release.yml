@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  release:
+    if: ${{ !github.event.deleted }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out tagged commit
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Build and test
+        run: ./gradlew --no-daemon clean build -PreleaseTag="$GITHUB_REF_NAME"
+
+      - name: Generate changelog
+        shell: bash
+        run: |
+          matches=()
+          while IFS= read -r tag; do
+            if [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              matches+=(--match "$tag")
+            fi
+          done < <(git tag --merged HEAD --no-contains HEAD)
+
+          range=HEAD
+          if (( ${#matches[@]} )); then
+            previous_tag=$(git describe --tags --abbrev=0 "${matches[@]}" HEAD)
+            range="$previous_tag..HEAD"
+          fi
+
+          {
+            echo '## Changelog'
+            echo
+            git log --format='- %s (`%h`)' "$range"
+          } > "$RUNNER_TEMP/CHANGELOG.md"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          jar="build/libs/trainmod-${GITHUB_REF_NAME#v}.jar"
+          test -s "$jar"
+          gh release create "$GITHUB_REF_NAME" "$jar" "$RUNNER_TEMP/CHANGELOG.md" \
+            --verify-tag --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/CHANGELOG.md"

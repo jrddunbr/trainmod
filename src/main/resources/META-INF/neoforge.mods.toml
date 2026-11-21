@@ -3,7 +3,7 @@ loaderVersion="[4,)"
 license="MIT"
 [[mods]]
 modId="trainmod"
-version="0.2.17"
+version="${modVersion}"
 displayName="jrddunbr's train mod"
 description="Coupled trains, railway engineering and maintenance equipment."
 [[mixins]]

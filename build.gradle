@@ -5,7 +5,52 @@ plugins {
 
 repositories { mavenCentral() }
 
-version = '0.2.17'
+def git = { String... arguments ->
+    providers.exec {
+        workingDir rootDir
+        commandLine(['git', '--no-optional-locks'] + arguments.toList())
+    }.standardOutput.asText.get().trim()
+}
+def versionTag = /v[0-9]+\.[0-9]+\.[0-9]+/
+def releaseTag = providers.gradleProperty('releaseTag').orNull
+def commit = file('.git').exists() ? git('rev-parse', 'HEAD') : null
+def resolveVersion = {
+    if (!commit && releaseTag == null) {
+        return '0.0.0-dev'
+    }
+    def dirty = commit && git('status', '--porcelain=v1', '--untracked-files=normal')
+    if (releaseTag != null) {
+        if (!(releaseTag ==~ versionTag) || !commit || dirty ||
+                git('tag', '--points-at', 'HEAD', '--list', releaseTag) != releaseTag) {
+            throw new GradleException("Release tag '${releaseTag}' must be a vMAJOR.MINOR.PATCH tag on a clean HEAD")
+        }
+        return releaseTag.substring(1)
+    }
+
+    def tags = git('tag', '--merged', 'HEAD', '--list').readLines().findAll { it ==~ versionTag }
+    def baseVersion = '0.0.0'
+    def revisions
+    def shortCommit
+    if (tags) {
+        def matches = tags.collectMany { ['--match', it] }
+        def (tag, distance, hash) = git('describe', '--tags', '--long', '--abbrev=12', *matches, 'HEAD').split('-')
+        baseVersion = tag.substring(1)
+        if (distance == '0' && !dirty) {
+            return baseVersion
+        }
+        revisions = distance
+        shortCommit = hash
+    } else {
+        revisions = git('rev-list', '--count', 'HEAD')
+        shortCommit = 'g' + git('rev-parse', '--short=12', 'HEAD')
+    }
+
+    def branch = git('rev-parse', '--abbrev-ref', 'HEAD')
+    def branchLabel = branch == 'HEAD' ? 'detached' : branch.replaceAll(/[^0-9A-Za-z-]+/, '-').take(64)
+    return "${baseVersion}-dev.${revisions}.${branchLabel}.${shortCommit}${dirty ? '.dirty' : ''}"
+}
+def modVersion = resolveVersion()
+version = modVersion
 group = 'org.ja4.trainmod'
 java.toolchain.languageVersion = JavaLanguageVersion.of(25)
 
@@ -82,6 +127,17 @@ neoForge {
 }
 
 tasks.named('processResources') {
+    inputs.property 'modVersion', modVersion
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand(modVersion: modVersion)
+    }
     from('LICENSE')
     from('README.md') { rename { 'TRAINMOD-GUIDE.md' } }
+}
+
+tasks.named('jar') {
+    manifest.attributes('Implementation-Version': modVersion)
+    if (commit) {
+        manifest.attributes('Git-Commit': commit)
+    }
 }
