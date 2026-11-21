@@ -1,0 +1,47 @@
+# jrddunbr's train mod
+
+jrddunbr's train mod 0.2.17 runs on Minecraft Java Edition 26.3 with NeoForge 26.3.0.115 and Java 25. Install `trainmod-0.2.17.jar` in the `mods` folder on the client and server. WorldEdit 7.4.6 is optional.
+
+This project uses the [MIT License](LICENSE).
+
+## Build and drive
+
+- Find the equipment in the **jrddunbr's train mod** Creative tab. In Survival, craft track kits, tools, vehicles, ballast, stands, and signals at a crafting table.
+- Pick the track item you want. Right-click a support block or the open end of an existing rail to place the entire piece. Face the direction the track should extend. With curves and turnouts, aim slightly toward the side you want the branch to take. At a diagonal approach, click either side of the open end to attach the curve from that direction. For a centered click, your position decides the side. The placement preview shows the route and marks missing support blocks red. A stand preview turns green when it can control an adjacent set of points. Straight kits cover 1, 3, 6, 8, or 12 blocks and follow cardinal or diagonal approaches. Rail kits stack up to 64 placed rail blocks, counting shared track once. Older oversized freight stacks are kept intact until you split them.
+- Break any rail in a piece to lift the whole piece. In Survival it returns one track item. Ties vary in length and angle by default. Set `variedRailTies = false` in `config/trainmod-client.toml` for uniform ties.
+- Use **Straight Bridge Rail** for a one-block straight with deep timber ties that sit flush on the deck. It snaps to cardinal and diagonal track just like a regular straight. Craft it with a vanilla rail above a spruce plank.
+- Support every segment. The ends of the three curves are 4, 8, or 12 blocks forward and 2, 3, or 5 blocks to the side. Connect diagonal rail at the corner beyond the end of a curve. Place a **1:6** or **1:8** grade from its low end. Face uphill and right-click the ground or an open rail end. The kit rises one block after 6 or 8 blocks of horizontal run and can sit on level ground. Build the next piece at the higher elevation. The parallel turnout's exits are three blocks apart.
+- Use a vehicle item on complete track to place the vehicle facing where you are looking. Leave about three to four blocks between vehicle centers. Right-click each facing end with the **Coupler Tool** to link them. Right-click the coupler itself to release a link. Coupling pulls the cars together until their couplers meet. Automatic coupling notifies players within 16 blocks of the joined couplers. Manual coupling confirms the link privately to the player using the tool. Unpowered cars also couple when their free ends meet at a closing speed over 1 mph. A consist can have up to 24 vehicles.
+- Right-click the RS3 or bore to board. Hold **W** to drive forward and **S** to slow and reverse. Release both to brake. **Shift** dismounts. The server sends each car’s actual speed and position so the client can smooth movement and cab motion between updates. Mod trains run on vanilla rails, including corners and grades. Vanilla minecarts use vanilla track. The flatcar, gondola and boxcar are 2.5–3 blocks long and up to 1.19 blocks tall above the railhead. Leave room for vehicle ends to swing through turns.
+- Right-click a freight car to open its 27-slot cargo inventory. Rail-only loads on flatcars and gondolas show up as strapped stacks. Gravel fills the gondola in proportion to the cargo. Click either boxcar door to slide it open or shut over five ticks. Sneak-right-click either end of a boxcar or gondola to board one of its two seats. Release Shift after boarding and press it again to dismount.
+- Walk into an unpowered car to push it along the rails. It coasts on level track and accelerates downhill. Right-click the offset rear handbrake wheel to set or release the brake. Its center turns 90° when applied and turns back when released. A set brake holds the whole coupled train.
+- Aim at a car to see its click targets. Couplers are cyan, handbrakes amber, and boxcar doors green. Minecraft's entity hitbox display also shows the train body outline.
+- Right-click any clear rail with a **Buffer Stop** to mount it at the clicked position. Its beam faces you along the rail at coupler height. It stops arriving trains and pauses the tunnel bore. Break the stop to remove it or lift the rail to recover it.
+
+## Superelevation
+
+The smallest curve uses a 20 mph design reference and eases into cant over one block at either end. The medium and large curves use 40 mph at 1:8 longitudinal scale, capped at the equivalent of six inches of prototype cant, and ease over two blocks at either end. The ends ease to level for straight, diagonal, grade, or switch track. Curves that meet with the high rail on the same side carry the bank through their joint at the lower of their two design speeds. Opposing curves level out at the join. Vehicles lean with the rail.
+
+## Turnouts and signals
+
+Put a switch stand beside the first rail block of a turnout. Click the stand to toggle power, or run a redstone circuit to the first rail block. The 45° and parallel turnouts select straight without power and diverging with power. Both wye sizes select left without power and right with power, viewed from the common approach. The medium wye matches the medium curve footprint on each branch. Put one stand beside each of the scissors crossover’s four point sets. Each controls its own straight or crossover route. Line up both ends for a through move. The fixed 45° and 90° diamond crossings carry both routes through the intersection. A train holds a turnout in its current position until all its vehicles clear it. The two point blades stay attached at their heels and slide together at their toes. Stock rails, frogs, and check rails stay fixed. The stand head turns with the point blades in the same quarter-second motion. When you operate the stand, it changes its redstone output at the start of the throw. If a train is on the turnout, both wait until it clears. The white rectangular flag means straight, and a red arrow points toward the selected branch.
+
+Place a signal immediately beside the rail at rail height, with its facing pointing toward the rail. Click the signal to reverse which direction it monitors. Green means the route up to the next same-direction signal or track end is clear. Red means the route is occupied or cannot be resolved, and outputs redstone away from the monitored rail. The driver brakes for red signals.
+
+## Tunnel bore and ballast
+
+- With a hopper in hand, right-click the bore to open the three supply slots. Fill them from left to right with vanilla rails or single-block mod straights, gravel, and cobblestone.
+- Sneak and right-click the bore for the first 54 cargo slots. Right-click with a chest for the other 54 slots. Place the bore on a level straight or diagonal pointing toward the cut. Any length of straight kit can be used as starter track. Couple any freight cars behind it.
+- Board, press **Space** to toggle work, and drive forward. The bore extends track one three-wide, four-high slice at a time, starting at rail height. It clears water and lava from each cut, puts gravel directly below the rail, and puts cobblestone below that. Vanilla fluid can flow back in from outside the cut.
+- Excavated items fill the trailing freight cars in order, then the onboard cargo buffer. The bore pauses and displays the specific missing supply or obstruction, including its location for blocked cuts.
+- Ballast blocks have a full, flat top with one-block shoulders that slope at 45°. Track raises the crest and its shoulders reach the same toe. The bed follows the track centerline around curves, meets diagonals corner to corner, and tapers at the track end into bare ballast or under the first bridge rail. The taper at a bridge starts from the full raised profile when there is a ballast block under the approach track. The steel profiles have end faces at open track ends. Raised ballast blends into neighboring ballast up to three blocks away at the same elevation, including on turnouts. Walk up its gravel shoulders one shallow step at a time. Tow a ballast car to raise existing track. Right-click the car to toggle it. As it moves, it replaces gravel beneath the rails and aligns the ballast with the track.
+
+## WorldEdit
+
+Select the entire piece, including its support blocks, when copying track. Paste directly or rotate by multiples of 90° and mirror horizontally before pasting. Save and load layouts as Sponge schematics. For example, use `//set trainmod:straight_rail[rotation=0,type=left,segment=0]` for a north–south straight or `//set trainmod:straight_rail[rotation=14,type=left,segment=0]` for a northwest–southeast diagonal. For multiblock pieces, place a complete piece with its track item first, then copy it to preserve the segment indexes. An incomplete piece behaves as a break in the railway.
+
+## Development
+
+`./gradlew build` runs the geometry tests and builds the JAR in `build/libs/`. Use `./gradlew runClient` for a development client with PulseAudio and the offline username `jrddunbr`. Use `./gradlew runClient -PclientAuth` to sign in with DevLogin and load your Minecraft account skin.
+
+Use `./gradlew runGameTestServer` for the in-world tests. Place the NeoForge WorldEdit 7.4.6 JAR in `run/game-test/mods/` to include the WorldEdit compatibility test.

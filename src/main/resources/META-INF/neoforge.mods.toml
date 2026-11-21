@@ -1,0 +1,22 @@
+modLoader="javafml"
+loaderVersion="[4,)"
+license="MIT"
+[[mods]]
+modId="trainmod"
+version="0.2.17"
+displayName="jrddunbr's train mod"
+description="Coupled trains, railway engineering and maintenance equipment."
+[[mixins]]
+config="trainmod.mixins.json"
+[[dependencies.trainmod]]
+modId="neoforge"
+type="required"
+versionRange="[26.3.0.115,26.4)"
+ordering="NONE"
+side="BOTH"
+[[dependencies.trainmod]]
+modId="minecraft"
+type="required"
+versionRange="[26.3]"
+ordering="NONE"
+side="BOTH"

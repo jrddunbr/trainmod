@@ -1,0 +1,1041 @@
+package org.ja4.trainmod;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+import java.util.UUID;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.UUIDUtil;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.MenuProvider;
+import net.minecraft.world.SimpleContainer;
+import net.minecraft.world.SimpleMenuProvider;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.InterpolationHandler;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.vehicle.VehicleEntity;
+import net.minecraft.world.entity.vehicle.minecart.AbstractMinecart;
+import net.minecraft.world.inventory.ChestMenu;
+import net.minecraft.world.inventory.MenuType;
+import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.storage.ValueInput;
+import net.minecraft.world.level.storage.ValueOutput;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
+
+final class TrainVehicle extends VehicleEntity {
+    enum Kind {
+        LOCOMOTIVE(2.57f, 3.25f, true),
+        FLATCAR(0.5625f, 2.50f, 0.90f, false),
+        GONDOLA(0.8125f, 2.80f, 0.875f, false),
+        BOXCAR(1.1875f, 3.00f, 0.90f, false),
+        TUNNEL_BORE(2.65f, 3.15f, true), BALLAST_CAR(1.75f, 2.85f, false);
+
+        final float height;
+        final float length;
+        final float width;
+        final boolean powered;
+
+        Kind(float height, float length, boolean powered) {
+            this(height, length, 1.5f, powered);
+        }
+
+        Kind(float height, float length, float width, boolean powered) {
+            this.height = height;
+            this.length = length;
+            this.width = width;
+            this.powered = powered;
+        }
+
+        String id() { return name().toLowerCase(Locale.ROOT); }
+
+        float brakeWheelHeight() {
+            return switch (this) {
+                case FLATCAR -> 7.5f;
+                case GONDOLA -> 11.5f;
+                default -> 12;
+            };
+        }
+
+        double brakeWheelOffset() { return VehicleModels.BRAKE_X * width / 32.0; }
+
+        boolean passengerCar() { return this == GONDOLA || this == BOXCAR; }
+
+        boolean showsLoad() { return this == FLATCAR || this == GONDOLA; }
+
+        boolean freight() { return this == FLATCAR || this == GONDOLA || this == BOXCAR; }
+    }
+
+    private record Member(TrainVehicle vehicle, int movement, int parent, int parentEnd) {}
+    private record Impact(TrainVehicle incoming, int incomingEnd, TrainVehicle waiting, int waitingEnd,
+                          RailNetwork.Position contact, List<Member> waitingConsist, double travel) {}
+
+    private static final double ONE_MPH = 0.44704 / 20;
+    private static final double COUPLING_NOTICE_RADIUS = 16;
+
+    static final int RAIL_SUPPLY = 0;
+    static final int GRAVEL_SUPPLY = 1;
+    static final int STONE_SUPPLY = 2;
+
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Float> BANK =
+        net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
+            net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Integer> FRONT_SEAT =
+        net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
+            net.minecraft.network.syncher.EntityDataSerializers.INT);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Integer> REAR_SEAT =
+        net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
+            net.minecraft.network.syncher.EntityDataSerializers.INT);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Integer> FRONT_COUPLED =
+        net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
+            net.minecraft.network.syncher.EntityDataSerializers.INT);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Integer> REAR_COUPLED =
+        net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
+            net.minecraft.network.syncher.EntityDataSerializers.INT);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Integer> CARGO_LOAD =
+        net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
+            net.minecraft.network.syncher.EntityDataSerializers.INT);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Integer> DOORS =
+        net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
+            net.minecraft.network.syncher.EntityDataSerializers.INT);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Boolean> HANDBRAKE =
+        net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
+            net.minecraft.network.syncher.EntityDataSerializers.BOOLEAN);
+    private float previousBank;
+    private float currentBank;
+
+    @Override
+    protected void defineSynchedData(net.minecraft.network.syncher.SynchedEntityData.Builder builder) {
+        super.defineSynchedData(builder);
+        builder.define(BANK, 0f);
+        builder.define(FRONT_SEAT, -1);
+        builder.define(REAR_SEAT, -1);
+        builder.define(FRONT_COUPLED, -1);
+        builder.define(REAR_COUPLED, -1);
+        builder.define(CARGO_LOAD, 0);
+        builder.define(DOORS, 0);
+        builder.define(HANDBRAKE, false);
+    }
+
+    float renderBank(float partial) {
+        return net.minecraft.util.Mth.lerp(partial, previousBank, currentBank);
+    }
+
+    int coupledId(int end) {
+        return entityData.get(end == 0 ? FRONT_COUPLED : REAR_COUPLED);
+    }
+
+    private void syncCoupler(int end, Entity linked) {
+        entityData.set(end == 0 ? FRONT_COUPLED : REAR_COUPLED, linked == null ? -1 : linked.getId());
+    }
+
+    final Kind kind;
+    final SimpleContainer cargo;
+    final SimpleContainer overflow;
+    final SimpleContainer supplies;
+    private final UUID[] links = new UUID[2];
+    private BlockPos railRoot;
+    private int railRoute = -1;
+    private double speed;
+    private double pendingPush;
+    private PartMotion leftDoorMotion = new PartMotion(0);
+    private PartMotion rightDoorMotion = new PartMotion(0);
+    private PartMotion handbrakeMotion = new PartMotion(0);
+    private boolean boardFront;
+    private boolean working;
+    private boolean previousJump;
+    private byte controlKeys;
+    private int lastControlTick = -100;
+    private BlockPos lastBallast;
+    private long nextMessageTick;
+    private Vec3 lastSyncedPosition;
+
+    TrainVehicle(EntityType<? extends TrainVehicle> type, Level level, Kind kind) {
+        super(type, level);
+        this.kind = kind;
+        cargo = inventory(kind == Kind.TUNNEL_BORE ? 54 : kind.freight() ? 27 : 0);
+        overflow = inventory(kind == Kind.TUNNEL_BORE ? 54 : 0);
+        supplies = inventory(kind == Kind.TUNNEL_BORE ? 9 : 0);
+    }
+
+    int railLayers() { return Math.max(0, entityData.get(CARGO_LOAD)); }
+
+    float gravelFill() { return Math.max(0, -entityData.get(CARGO_LOAD)) / 100f; }
+
+    boolean doorOpen(boolean left) { return (entityData.get(DOORS) & (left ? 1 : 2)) != 0; }
+
+    boolean handbrakeApplied() { return entityData.get(HANDBRAKE); }
+
+    float doorProgress(boolean left, float partial) {
+        return (float) (left ? leftDoorMotion : rightDoorMotion).at(level().getGameTime() + (double) partial);
+    }
+
+    float handbrakeAngle(float partial) {
+        return (float) handbrakeMotion.at(level().getGameTime() + (double) partial);
+    }
+
+    @Override
+    public void onSyncedDataUpdated(net.minecraft.network.syncher.EntityDataAccessor<?> key) {
+        super.onSyncedDataUpdated(key);
+        if (key.equals(DOORS)) {
+            leftDoorMotion = movePart(leftDoorMotion, doorOpen(true) ? 1 : 0);
+            rightDoorMotion = movePart(rightDoorMotion, doorOpen(false) ? 1 : 0);
+        } else if (key.equals(HANDBRAKE)) {
+            handbrakeMotion = movePart(handbrakeMotion, handbrakeApplied() ? 90 : 0);
+        }
+    }
+
+    private PartMotion movePart(PartMotion motion, double target) {
+        // An entity entering the client view starts in its saved pose.
+        if (level().isClientSide() && tickCount == 0) return new PartMotion(target);
+        motion.moveTo(target, level().getGameTime());
+        return motion;
+    }
+
+    private void syncCargo() {
+        double rails = 0;
+        double gravel = 0;
+        boolean railsOnly = true;
+        for (int slot = 0; slot < cargo.getContainerSize(); slot++) {
+            ItemStack stack = cargo.getItem(slot);
+            if (stack.isEmpty()) continue;
+            double units = stack.getCount() / (double) stack.getMaxStackSize();
+            if (stack.getItem() instanceof TrackItem || stack.getItem() instanceof net.minecraft.world.item.BlockItem item
+                && item.getBlock() instanceof net.minecraft.world.level.block.BaseRailBlock) {
+                rails += units;
+            } else {
+                railsOnly = false;
+                if (stack.is(Items.GRAVEL)) gravel += units;
+            }
+        }
+        int load = railsOnly && rails > 0 ? Math.clamp((int) Math.ceil(rails * 4 / cargo.getContainerSize()), 1, 4)
+            : kind == Kind.GONDOLA && gravel > 0 ? -Math.clamp((int) Math.ceil(gravel * 100 / cargo.getContainerSize()), 1, 100)
+            : 0;
+        entityData.set(CARGO_LOAD, load);
+    }
+
+    private SimpleContainer inventory(int size) {
+        return new SimpleContainer(size) {
+            @Override
+            public void setChanged() {
+                super.setChanged();
+                if (this == cargo && kind.showsLoad() && !level().isClientSide()) syncCargo();
+            }
+
+            @Override
+            public boolean stillValid(Player player) {
+                return isAlive() && player.distanceToSqr(TrainVehicle.this) <= 64;
+            }
+        };
+    }
+
+    BlockPos railRoot() { return railRoot; }
+
+    @Override
+    protected Item getDropItem() { return Trainmod.VEHICLE_ITEMS.get(kind).get(); }
+
+    @Override
+    public boolean isPickable() { return isAlive(); }
+
+    @Override
+    public boolean canBeCollidedWith(Entity other) { return isAlive(); }
+
+    @Override
+    protected boolean canAddPassenger(Entity passenger) {
+        return passenger instanceof Player && (kind.powered && getPassengers().isEmpty()
+            || kind.passengerCar() && getPassengers().size() < 2);
+    }
+
+    @Override
+    public LivingEntity getControllingPassenger() {
+        return kind.powered && getFirstPassenger() instanceof Player player ? player : null;
+    }
+
+    @Override
+    protected boolean isLocalClientAuthoritative() { return false; }
+
+    @Override
+    public boolean isClientAuthoritative() { return false; }
+
+    @Override
+    protected InterpolationHandler createInterpolationHandler() {
+        return level().isClientSide() ? new TrainInterpolation(this) : InterpolationHandler.NO_OP;
+    }
+
+    @Override
+    public void updateDataBeforeSync() {
+        Vec3 current = position();
+        Vec3 displacement = lastSyncedPosition == null ? Vec3.ZERO : current.subtract(lastSyncedPosition);
+        lastSyncedPosition = current;
+        // Publish each car's actual travel, including cars whose movement is driven by another vehicle.
+        setDeltaMovement(displacement.lengthSqr() <= 0.4 * 0.4 ? displacement : Vec3.ZERO);
+    }
+
+    @Override
+    public void recreateFromPacket(ClientboundAddEntityPacket packet) {
+        super.recreateFromPacket(packet);
+        lerpMotion(packet.getMovement());
+    }
+
+    @Override
+    public void lerpMotion(Vec3 movement) {
+        super.lerpMotion(movement);
+        if (getInterpolation() instanceof TrainInterpolation interpolation) interpolation.setVelocity(movement);
+    }
+
+    @Override
+    public void snapTo(double x, double y, double z, float yaw, float pitch) {
+        getInterpolation().cancel();
+        super.snapTo(x, y, z, yaw, pitch);
+    }
+
+    @Override
+    protected Vec3 getPassengerAttachmentPoint(Entity passenger, net.minecraft.world.entity.EntityDimensions dimensions,
+                                               float partialTick) {
+        if (kind.passengerCar()) {
+            return facing().scale(kind.length * (entityData.get(FRONT_SEAT) == passenger.getId() ? 0.28 : -0.28))
+                .add(0, 0.37, 0);
+        }
+        double seat = kind == Kind.LOCOMOTIVE ? -0.2 : -0.65;
+        return facing().scale(seat).add(0, 0.68, 0);
+    }
+
+    @Override
+    protected void addPassenger(Entity passenger) {
+        super.addPassenger(passenger);
+        if (!level().isClientSide() && kind.passengerCar()) {
+            boolean front = entityData.get(FRONT_SEAT) < 0 && (boardFront || entityData.get(REAR_SEAT) >= 0);
+            entityData.set(front ? FRONT_SEAT : REAR_SEAT, passenger.getId());
+        }
+    }
+
+    @Override
+    protected void removePassenger(Entity passenger) {
+        super.removePassenger(passenger);
+        if (!level().isClientSide() && kind.passengerCar()) {
+            if (entityData.get(FRONT_SEAT) == passenger.getId()) entityData.set(FRONT_SEAT, -1);
+            if (entityData.get(REAR_SEAT) == passenger.getId()) entityData.set(REAR_SEAT, -1);
+        }
+    }
+
+    private VehicleHitboxes.Component clickedControl(Player player, VehicleHitboxes.Frame frame, Vec3 click) {
+        // The client picks against the rendered pose. Allow a little room for movement before the packet arrives.
+        for (var target : VehicleHitboxes.of(kind).controls()) {
+            var here = VehicleHitboxes.bounds(this, target, 0);
+            var recent = VehicleHitboxes.bounds(this, target, -2);
+            if (here.minmax(recent).inflate(0.035).contains(click)) return target.component();
+        }
+        Vec3 eye = frame.local(player.getEyePosition());
+        Vec3 ray = click.subtract(eye);
+        if (ray.lengthSqr() < 1e-8 || ray.length() > player.entityInteractionRange()) return null;
+        var hit = VehicleHitboxes.pick(this, eye, eye.add(ray.normalize().scale(player.entityInteractionRange())));
+        return hit == null ? null : hit.component();
+    }
+
+    VehicleHitboxes.Frame renderFrame(float partial) {
+        return new VehicleHitboxes.Frame(getPosition(partial), net.minecraft.util.Mth.rotLerp(partial, yRotO, getYRot()),
+            net.minecraft.util.Mth.lerp(partial, xRotO, getXRot()), renderBank(partial));
+    }
+
+    private VehicleHitboxes.Frame currentFrame(Vec3 position) {
+        return new VehicleHitboxes.Frame(position, getYRot(), getXRot(), entityData.get(BANK));
+    }
+
+    @Override
+    public InteractionResult interact(Player player, InteractionHand hand, Vec3 hit) {
+        if (!(level() instanceof ServerLevel level)) {
+            return InteractionResult.SUCCESS;
+        }
+        ItemStack held = player.getItemInHand(hand);
+        boolean secondary = player.isSecondaryUseActive();
+        var frame = currentFrame(position());
+        Vec3 local = frame.local(position().add(hit));
+        var control = secondary && kind.passengerCar() ? null : clickedControl(player, frame, local);
+        int linkedEnd = secondary || control == null ? -1 : control.couplerEnd();
+        if (held.is(Trainmod.COUPLER.get())) {
+            couple(level, player, held, linkedEnd >= 0 ? linkedEnd : local.z >= 0 ? 0 : 1, secondary);
+        } else if (linkedEnd >= 0 && links[linkedEnd] != null) {
+            releaseCoupler(level, player, linkedEnd);
+        } else if (kind.passengerCar() && secondary) {
+            boardFront = local.z >= 0;
+            // Consume the boarding press so the same held key does not instantly dismount the player.
+            player.setShiftKeyDown(false);
+            if (!player.startRiding(this)) player.setShiftKeyDown(true);
+        } else if (control == VehicleHitboxes.Component.LEFT_DOOR || control == VehicleHitboxes.Component.RIGHT_DOOR) {
+            entityData.set(DOORS, entityData.get(DOORS) ^ (control == VehicleHitboxes.Component.LEFT_DOOR ? 1 : 2));
+        } else if (control == VehicleHitboxes.Component.HANDBRAKE) {
+            boolean set = !handbrakeApplied();
+            entityData.set(HANDBRAKE, set);
+            if (set) speed = 0;
+            message(player, set ? "brake_set" : "brake_released");
+        } else if (kind == Kind.BALLAST_CAR) {
+            working = !working;
+            message(player, working ? "ballast_on" : "ballast_off");
+        } else if (kind == Kind.TUNNEL_BORE && held.is(Items.HOPPER)) {
+            player.openMenu(new SimpleMenuProvider((id, inv, ignored) -> new SupplyMenu(id, inv, supplies),
+                Component.translatable("menu.trainmod.supplies")));
+        } else if (kind == Kind.TUNNEL_BORE && (secondary || held.is(Items.CHEST))) {
+            boolean second = held.is(Items.CHEST);
+            player.openMenu(cargoMenu(second ? overflow : cargo,
+                Component.translatable(second ? "menu.trainmod.bore_2" : "menu.trainmod.bore_1")));
+        } else if (kind.freight()) {
+            player.openMenu(cargoMenu(cargo, getDisplayName()));
+        } else if (kind.powered) {
+            if (player.startRiding(this)) {
+                message(player, "drive_controls");
+            }
+        }
+        return InteractionResult.SUCCESS;
+    }
+
+    private static MenuProvider cargoMenu(SimpleContainer cargo, Component title) {
+        return new SimpleMenuProvider((id, playerInventory, player) -> cargo.getContainerSize() == 54
+            ? ChestMenu.sixRows(id, playerInventory, cargo) : ChestMenu.threeRows(id, playerInventory, cargo), title);
+    }
+
+    @Override
+    public void tick() {
+        super.tick();
+        if (level().isClientSide()) {
+            previousBank = currentBank;
+            currentBank = net.minecraft.util.Mth.lerp(0.5f, currentBank, entityData.get(BANK));
+            setBoundingBox(makeBoundingBox(position()));
+            return;
+        }
+        if (getHurtTime() > 0) {
+            setHurtTime(getHurtTime() - 1);
+        }
+        if (getDamage() > 0) {
+            setDamage(getDamage() - 1);
+        }
+        if (level() instanceof ServerLevel level) {
+            if ((tickCount & 7) == 0) {
+                for (int end = 0; end < links.length; end++) {
+                    if (links[end] != null) syncCoupler(end, level.getEntity(links[end]));
+                }
+            }
+            if (kind.powered && getFirstPassenger() instanceof ServerPlayer driver) {
+                drive(level, driver);
+            } else if (kind.powered) {
+                speed = 0;
+                controlKeys = 0;
+                previousJump = false;
+                lastControlTick = -100;
+            } else {
+                roll(level);
+            }
+        }
+        if (speed == 0 && railRoot != null && (tickCount & 7) == 0) {
+            refreshBank(cursor());
+        }
+    }
+
+    @Override
+    public void push(double x, double y, double z) {
+        if (!kind.powered && !handbrakeApplied() && !level().isClientSide()) {
+            pendingPush = Math.clamp(pendingPush + facing().dot(new Vec3(x, 0, z)), -0.10, 0.10);
+        }
+    }
+
+    private void roll(ServerLevel level) {
+        if (railRoot == null) return;
+        var members = consist(level);
+        if (members == null || members.stream().anyMatch(member -> member.vehicle.kind.powered)
+            || members.stream().anyMatch(member -> member.vehicle.getUUID().compareTo(getUUID()) < 0)) {
+            speed = 0;
+            return;
+        }
+
+        double gravity = 0;
+        double push = 0;
+        double slowdown = 0;
+        boolean braked = false;
+        for (Member member : members) {
+            TrainVehicle car = member.vehicle;
+            var position = car.cursor();
+            if (position == null) {
+                speed = 0;
+                return;
+            }
+            gravity -= position.tangent().y * member.movement;
+            push += (car.pendingPush + car.walkingPush(level)) * member.movement;
+            car.pendingPush = 0;
+            slowdown += car.isVehicle() ? 0.997 : 0.96;
+            braked |= car.handbrakeApplied();
+        }
+        if (braked) {
+            speed = 0;
+            return;
+        }
+        // Gravity in blocks per tick squared, resolved along the rail and averaged across the coupled cars.
+        speed = Math.clamp((speed * slowdown + gravity * (9.80665 / 400)) / members.size()
+            + Math.clamp(push, -0.10, 0.10) / members.size(), -0.33, 0.33);
+        if (Math.abs(speed) < 0.001) {
+            speed = 0;
+        } else {
+            moveConsist(level, null, members);
+        }
+    }
+
+    private double walkingPush(ServerLevel level) {
+        double impulse = 0;
+        Vec3 forward = facing();
+        for (ServerPlayer player : level.getEntitiesOfClass(ServerPlayer.class, getBoundingBox().inflate(0.16))) {
+            if (player.isPassenger() || player.isSpectator()) continue;
+            double movement = player.getKnownMovement().dot(forward);
+            var input = player.getLastClientInput();
+            if (Math.abs(movement) < 0.01 && input.forward() != input.backward()) {
+                movement = player.getViewVector(1).dot(forward) * (input.forward() ? 0.10 : -0.10);
+            }
+            double side = player.position().subtract(position()).dot(forward);
+            if (side * movement < 0) impulse += movement * 0.12;
+        }
+        return impulse;
+    }
+
+    void receiveControls(ServerPlayer player, byte keys) {
+        if (getControllingPassenger() == player) {
+            controlKeys = keys;
+            lastControlTick = tickCount;
+        }
+    }
+
+    private void drive(ServerLevel level, ServerPlayer driver) {
+        byte keys = tickCount - lastControlTick <= 16 ? controlKeys : 0;
+        boolean work = (keys & TrainControls.WORK) != 0;
+        if (kind == Kind.TUNNEL_BORE && work && !previousJump) {
+            working = !working;
+            message(driver, working ? "bore_on" : "bore_off");
+        }
+        previousJump = work;
+        boolean forward = (keys & TrainControls.FORWARD) != 0;
+        boolean reverse = (keys & TrainControls.REVERSE) != 0;
+        double target = forward == reverse ? 0 : forward ? 0.24 : -0.14;
+        if (target * speed < 0) {
+            target = 0;
+        }
+        speed += Math.clamp(target - speed, -0.04, 0.025);
+        if (Math.abs(speed) < 1e-5) {
+            return;
+        }
+        List<Member> consist = consist(level);
+        RailNetwork.Position start = cursor();
+        if (consist == null || start == null) {
+            stop(driver, consist == null ? "consist_unavailable" : "route_unavailable");
+            return;
+        }
+        if (consist.stream().anyMatch(member -> member.vehicle.handbrakeApplied())) {
+            stop(driver, "brake_holding");
+            return;
+        }
+        if (kind == Kind.TUNNEL_BORE && working && speed > 0) {
+            List<TrainVehicle> trailing = trailingFreight(level);
+            var issue = TrackWork.extendIfNeeded(level, driver, this, start, trailing);
+            if (issue != null) {
+                stop(driver, issue.message());
+                return;
+            }
+        }
+        moveConsist(level, driver, consist);
+    }
+
+    private void moveConsist(ServerLevel level, ServerPlayer driver, List<Member> consist) {
+        Set<UUID> own = new HashSet<>();
+        consist.forEach(member -> own.add(member.vehicle.getUUID()));
+        RailNetwork.Position current = cursor();
+        RailNetwork.Position lead = current == null ? null : RailNetwork.advance(level, current, speed);
+        List<RailNetwork.Position> targets = plannedPositions(level, consist, lead);
+        if (targets != null && driver == null && coupleOnImpact(level, consist, targets, own)) return;
+        if (targets == null) {
+            stop(driver, lead == null ? "end_of_track" : "consist_unavailable");
+            return;
+        }
+        int blocked = blockedPosition(level, consist, targets, own);
+        if (blocked >= 0) {
+            var car = consist.get(blocked).vehicle;
+            stop(driver, Component.translatable("message.trainmod.vehicle_clearance", car.getDisplayName(),
+                BlockPos.containing(targets.get(blocked).point()).toShortString()));
+            return;
+        }
+        for (int i = 0; i < consist.size(); i++) {
+            TrainVehicle vehicle = consist.get(i).vehicle;
+            RailNetwork.Position next = targets.get(i);
+            vehicle.moveToRail(next);
+            if (driver != null && vehicle.kind == Kind.BALLAST_CAR && vehicle.working) {
+                BlockPos under = BlockPos.containing(next.point()).below();
+                if (!under.equals(vehicle.lastBallast) && TrackWork.ballast(level, driver, under)) {
+                    vehicle.lastBallast = under;
+                }
+            }
+        }
+    }
+
+    private boolean coupleOnImpact(ServerLevel level, List<Member> consist, List<RailNetwork.Position> targets, Set<UUID> own) {
+        Impact impact = null;
+        for (int i = 0; i < consist.size(); i++) {
+            var member = consist.get(i);
+            var incoming = member.vehicle;
+            int end = speed * member.movement > 0 ? 0 : 1;
+            if (incoming.links[end] != null) continue;
+            var current = incoming.cursor();
+            if (current == null) continue;
+            var target = targets.get(i);
+            Vec3 heading = current.tangent().scale(end == 0 ? 1 : -1);
+            AABB nearby = AABB.ofSize(target.point(), 8, 2, 8);
+            for (var waiting : level.getEntitiesOfClass(TrainVehicle.class, nearby,
+                car -> !car.kind.powered && !own.contains(car.getUUID()))) {
+                var candidate = impact(level, incoming, end, waiting, current, target, heading, consist.size());
+                if (candidate != null && (impact == null || candidate.travel < impact.travel)) impact = candidate;
+            }
+        }
+        if (impact == null) return false;
+        var incomingConsist = impact.incoming.consist(level);
+        if (incomingConsist == null) return false;
+        Set<UUID> both = new HashSet<>(own);
+        impact.waitingConsist.forEach(member -> both.add(member.vehicle.getUUID()));
+        var positions = plannedPositions(level, incomingConsist, impact.contact);
+        if (positions == null || blockedPosition(level, incomingConsist, positions, both) >= 0) return false;
+        for (int i = 0; i < incomingConsist.size(); i++) incomingConsist.get(i).vehicle.moveToRail(positions.get(i));
+        impact.incoming.linkPair(impact.incomingEnd, impact.waiting, impact.waitingEnd);
+        Vec3 joint = impact.incoming.couplerTip(impact.incomingEnd).lerp(impact.waiting.couplerTip(impact.waitingEnd), 0.5);
+        for (ServerPlayer player : level.getPlayers(player ->
+                player.distanceToSqr(joint) <= COUPLING_NOTICE_RADIUS * COUPLING_NOTICE_RADIUS)) {
+            message(player, "coupled");
+        }
+        for (var group : List.of(incomingConsist, impact.waitingConsist)) {
+            for (var member : group) {
+                member.vehicle.speed = 0;
+                member.vehicle.pendingPush = 0;
+            }
+        }
+        return true;
+    }
+
+    private Impact impact(ServerLevel level, TrainVehicle incoming, int end, TrainVehicle waiting, RailNetwork.Position from,
+                          RailNetwork.Position to, Vec3 heading, int incomingCount) {
+        var fixed = waiting.cursor();
+        if (fixed == null) return null;
+        Vec3 separation = fixed.point().subtract(from.point());
+        if (separation.dot(heading) <= 0) return null;
+        int waitingEnd = fixed.tangent().dot(separation) < 0 ? 0 : 1;
+        if (waiting.links[waitingEnd] != null) return null;
+        var contact = touchCouplers(level, fixed, waiting, waitingEnd, incoming, end == waitingEnd);
+        if (contact == null) return null;
+        Vec3 approach = contact.point().subtract(from.point());
+        double travel = approach.dot(heading);
+        double reach = to.point().subtract(from.point()).dot(heading);
+        if (travel < -0.085 || travel > reach + 1e-5) return null;
+        var probe = RailNetwork.advance(level, from, travel * (end == 0 ? 1 : -1));
+        if (probe == null || probe.point().distanceToSqr(contact.point()) > 0.0016) return null;
+
+        var waitingConsist = waiting.consist(level);
+        if (waitingConsist == null || waitingConsist.size() + incomingCount > 24) return null;
+        double waitingSpeed = waitingConsist.stream().mapToDouble(member -> member.vehicle.speed * member.movement).sum();
+        double closingSpeed = Math.abs(speed) + (waitingEnd == 0 ? waitingSpeed : -waitingSpeed);
+        return closingSpeed > ONE_MPH ? new Impact(incoming, end, waiting, waitingEnd, contact, waitingConsist, travel) : null;
+    }
+
+    private void stop(ServerPlayer driver, String key) {
+        stop(driver, Component.translatable("message.trainmod." + key));
+    }
+
+    private void stop(ServerPlayer driver, Component reason) {
+        speed = 0;
+        if (driver != null && tickCount >= nextMessageTick) {
+            nextMessageTick = tickCount + 30;
+            driver.sendOverlayMessage(reason);
+        }
+    }
+
+    RailNetwork.Position cursor() {
+        return railRoot == null ? null : RailNetwork.locate(level(), railRoot, position(), facing(), railRoute);
+    }
+
+    private Vec3 facing() {
+        return Vec3.directionFromRotation(0, getYRot());
+    }
+
+    void moveToRail(RailNetwork.Position position) {
+        railRoot = position.rail().root();
+        railRoute = position.rail().route();
+        refreshBank(position);
+        Vec3 tangent = position.tangent();
+        setRot((float) Math.toDegrees(Math.atan2(-tangent.x, tangent.z)),
+            (float) -Math.toDegrees(Math.atan2(tangent.y, tangent.horizontalDistance())));
+        setPos(position.point());
+    }
+
+    private void refreshBank(RailNetwork.Position position) {
+        float bank = 0;
+        if (position != null && level().getBlockState(position.rail().root()).getBlock() instanceof TrackBlock track
+            && track.kind.bankedCurve()) {
+            var path = position.rail().path();
+            int connections = CurveBanking.connections(level(), position.rail().root(), track.kind, path, CurveBanking.START | CurveBanking.END);
+            bank = (float) (CurveBanking.slope(track.kind, path, position.distance(), connections) * position.forward());
+        }
+        entityData.set(BANK, bank);
+    }
+
+    @Override
+    protected AABB makeBoundingBox(Vec3 position) {
+        if (kind == null) {
+            return super.makeBoundingBox(position);
+        }
+        double width = kind.width / 2.0;
+        double length = kind.length / 2.0;
+        return currentFrame(position).worldBounds(new AABB(-width, 0, -length, width, kind.height, length));
+    }
+
+    boolean canMoveTo(ServerLevel level, RailNetwork.Position target, Set<UUID> own) {
+        Vec3 point = target.point();
+        Vec3 forward = target.tangent().multiply(1, 0, 1).normalize();
+        Vec3 left = new Vec3(forward.z, 0, -forward.x);
+        double sampleRadius = Math.min(0.24, kind.width / 6.0);
+        double sideOffset = kind.width / 2.0 - sampleRadius;
+        AABB search = AABB.ofSize(point.add(0, 0.5, 0), 8, 2.5, 8);
+        var buffers = level.getEntitiesOfClass(BufferStop.Mounted.class, search);
+        for (int longitudinal = -2; longitudinal <= 2; longitudinal++) {
+            double along = longitudinal * (kind.length / 2.0 - sampleRadius) / 2.0;
+            for (int across = -1; across <= 1; across++) {
+                Vec3 center = point.add(target.tangent().scale(along)).add(left.scale(across * sideOffset));
+                AABB part = new AABB(center.x - sampleRadius, center.y + 0.20, center.z - sampleRadius,
+                    center.x + sampleRadius, center.y + kind.height, center.z + sampleRadius);
+                if (!level.isLoaded(BlockPos.containing(center)) || level.getBlockCollisions(this, part).iterator().hasNext()
+                    || buffers.stream().anyMatch(buffer -> buffer.getBoundingBox().intersects(part))) {
+                    return false;
+                }
+            }
+        }
+        return level.getEntitiesOfClass(TrainVehicle.class, search, car -> car != this
+                && !own.contains(car.getUUID()) && vehiclesOverlap(point, forward, car)).isEmpty()
+            && level.getEntitiesOfClass(AbstractMinecart.class, search,
+                cart -> cart.position().distanceToSqr(point) < 1.5 * 1.5).isEmpty();
+    }
+
+    private boolean vehiclesOverlap(Vec3 point, Vec3 forward, TrainVehicle other) {
+        Vec3 separation = other.position().subtract(point).multiply(1, 0, 1);
+        double distance = separation.length();
+        Vec3 axis = separation.normalize();
+        return point.y < other.getY() + other.kind.height && other.getY() < point.y + kind.height
+            && (distance < 0.01 || distance < extent(forward, axis, kind)
+                + extent(other.facing(), axis, other.kind) - 0.08);
+    }
+
+    private static double extent(Vec3 forward, Vec3 axis, Kind kind) {
+        return Math.abs(forward.dot(axis)) * kind.length / 2
+            + Math.abs(new Vec3(forward.z, 0, -forward.x).dot(axis)) * kind.width / 2;
+    }
+
+    private List<Member> consist(ServerLevel level) {
+        List<Member> members = new ArrayList<>();
+        Set<UUID> visited = new HashSet<>();
+        members.add(new Member(this, 1, -1, -1));
+        visited.add(getUUID());
+        for (int i = 0; i < members.size(); i++) {
+            Member member = members.get(i);
+            for (int end = 0; end < 2; end++) {
+                UUID id = member.vehicle.links[end];
+                if (id == null || visited.contains(id)) {
+                    continue;
+                }
+                if (!(level.getEntity(id) instanceof TrainVehicle next)) {
+                    return null;
+                }
+                int otherEnd = next.linkedEnd(member.vehicle.getUUID());
+                if (otherEnd < 0 || members.size() >= 24 || next.kind.powered && next.isVehicle()) {
+                    return null;
+                }
+                visited.add(id);
+                members.add(new Member(next, member.movement * (end == otherEnd ? -1 : 1), i, end));
+            }
+        }
+        return members;
+    }
+
+    private static List<RailNetwork.Position> coupledPositions(ServerLevel level, List<Member> consist,
+                                                              RailNetwork.Position lead, Set<UUID> own) {
+        var positions = plannedPositions(level, consist, lead);
+        return positions != null && blockedPosition(level, consist, positions, own) < 0 ? positions : null;
+    }
+
+    private static List<RailNetwork.Position> plannedPositions(ServerLevel level, List<Member> consist, RailNetwork.Position lead) {
+        var targets = new ArrayList<RailNetwork.Position>();
+        for (Member member : consist) {
+            RailNetwork.Position target = lead;
+            if (member.parent >= 0) {
+                Member parent = consist.get(member.parent);
+                target = touchCouplers(level, targets.get(member.parent), parent.vehicle, member.parentEnd,
+                    member.vehicle, member.movement != parent.movement);
+            }
+            if (target == null) return null;
+            targets.add(target);
+        }
+        return targets;
+    }
+
+    private static int blockedPosition(ServerLevel level, List<Member> consist, List<RailNetwork.Position> targets,
+                                       Set<UUID> own) {
+        for (int i = 0; i < consist.size(); i++) {
+            var car = consist.get(i).vehicle;
+            var target = targets.get(i);
+            if (!car.canMoveTo(level, target, own)
+                || car.handbrakeApplied() && target.point().distanceToSqr(car.position()) > 1e-6) return i;
+        }
+        return -1;
+    }
+
+    private static RailNetwork.Position touchCouplers(ServerLevel level, RailNetwork.Position fixed, TrainVehicle fixedCar,
+                                                      int fixedEnd, TrainVehicle movingCar, boolean reversed) {
+        double separation = (fixedCar.kind.length + movingCar.kind.length) / 2.0;
+        var position = RailNetwork.advance(level, fixed, fixedEnd == 0 ? separation : -separation);
+        return position != null && reversed
+            ? new RailNetwork.Position(position.rail(), position.distance(), -position.forward()) : position;
+    }
+
+    private List<TrainVehicle> trailingFreight(ServerLevel level) {
+        List<TrainVehicle> freight = new ArrayList<>();
+        TrainVehicle current = this;
+        int rear = 1;
+        for (int i = 0; i < 23 && current.links[rear] != null; i++) {
+            if (!(level.getEntity(current.links[rear]) instanceof TrainVehicle next)) {
+                break;
+            }
+            rear = 1 - next.linkedEnd(current.getUUID());
+            if (rear > 1) {
+                break;
+            }
+            if (next.kind.freight()) {
+                freight.add(next);
+            }
+            current = next;
+        }
+        return freight;
+    }
+
+    private int linkedEnd(UUID target) {
+        return target.equals(links[0]) ? 0 : target.equals(links[1]) ? 1 : -1;
+    }
+
+    private void couple(ServerLevel level, Player player, ItemStack tool, int end, boolean sneaking) {
+        var data = TrackBuilder.data(tool);
+        if (links[end] != null) {
+            releaseCoupler(level, player, end);
+            data.remove("vehicle");
+            TrackBuilder.save(tool, data);
+            return;
+        }
+        if (sneaking) {
+            data.remove("vehicle");
+            TrackBuilder.save(tool, data);
+            return;
+        }
+        UUID selected = data.read("vehicle", UUIDUtil.CODEC).orElse(null);
+        if (selected == null || !(level.getEntity(selected) instanceof TrainVehicle other) || other == this) {
+            data.store("vehicle", UUIDUtil.CODEC, getUUID());
+            data.putInt("end", end);
+            TrackBuilder.save(tool, data);
+            message(player, "coupler_selected");
+            return;
+        }
+        int otherEnd = data.getIntOr("end", 0) == 0 ? 0 : 1;
+        List<Member> ownConsist = consist(level);
+        List<Member> otherConsist = other.consist(level);
+        RailNetwork.Position first = cursor();
+        RailNetwork.Position second = other.cursor();
+        if (other.links[otherEnd] != null || ownConsist == null || otherConsist == null
+            || ownConsist.size() + otherConsist.size() > 24
+            || ownConsist.stream().anyMatch(member -> member.vehicle == other || Math.abs(member.vehicle.speed) > 0.001)
+            || otherConsist.stream().anyMatch(member -> Math.abs(member.vehicle.speed) > 0.001)
+            || first == null || second == null || !canCouple(level, first, end, second, otherEnd, (kind.length + other.kind.length) / 2)) {
+            message(player, "coupler_alignment");
+            return;
+        }
+        Set<UUID> both = new HashSet<>();
+        ownConsist.forEach(member -> both.add(member.vehicle.getUUID()));
+        otherConsist.forEach(member -> both.add(member.vehicle.getUUID()));
+        boolean reversed = end == otherEnd;
+        var moving = ownConsist;
+        var positions = coupledPositions(level, moving, touchCouplers(level, second, other, otherEnd, this, reversed), both);
+        if (positions == null) {
+            moving = otherConsist;
+            positions = coupledPositions(level, moving, touchCouplers(level, first, this, end, other, reversed), both);
+        }
+        if (positions == null) {
+            message(player, "coupler_alignment");
+            return;
+        }
+        for (int i = 0; i < moving.size(); i++) moving.get(i).vehicle.moveToRail(positions.get(i));
+        linkPair(end, other, otherEnd);
+        data.remove("vehicle");
+        TrackBuilder.save(tool, data);
+        message(player, "coupled");
+    }
+
+    private void releaseCoupler(ServerLevel level, Player player, int end) {
+        unlink(level, end);
+        message(player, "uncoupled");
+    }
+
+    private void linkPair(int end, TrainVehicle other, int otherEnd) {
+        links[end] = other.getUUID();
+        other.links[otherEnd] = getUUID();
+        syncCoupler(end, other);
+        other.syncCoupler(otherEnd, this);
+    }
+
+    private Vec3 couplerTip(int end) {
+        return position().add(couplerOffset(end, getYRot(), getXRot(), entityData.get(BANK)));
+    }
+
+    Vec3 couplerOffset(int end, float yaw, float pitch, double bank) {
+        double height = (VehicleModels.COUPLER_BOTTOM + VehicleModels.COUPLER_HEIGHT / 2) / 16;
+        return new VehicleHitboxes.Frame(Vec3.ZERO, yaw, pitch, bank)
+            .world(new Vec3(0, height, (end == 0 ? 1 : -1) * kind.length / 2));
+    }
+
+    private static boolean canCouple(ServerLevel level, RailNetwork.Position first, int end,
+                                     RailNetwork.Position second, int otherEnd, double combinedLength) {
+        int sign = end == 0 ? 1 : -1;
+        for (int i = 0; i <= 14; i++) {
+            RailNetwork.Position probe = RailNetwork.advance(level, first, sign * (combinedLength - 0.18 + i * 0.09));
+            if (probe == null) {
+                break;
+            }
+            if (probe.point().distanceToSqr(second.point()) < 0.012
+                && probe.tangent().dot(second.tangent()) * sign * (otherEnd == 0 ? 1 : -1) < -0.65) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void unlink(ServerLevel level, int end) {
+        if (links[end] != null && level.getEntity(links[end]) instanceof TrainVehicle other) {
+            int otherEnd = other.linkedEnd(getUUID());
+            if (otherEnd >= 0) {
+                other.links[otherEnd] = null;
+                other.syncCoupler(otherEnd, null);
+            }
+        }
+        links[end] = null;
+        syncCoupler(end, null);
+    }
+
+    @Override
+    public void remove(RemovalReason reason) {
+        if (reason.shouldDestroy() && level() instanceof ServerLevel level) {
+            unlink(level, 0);
+            unlink(level, 1);
+            if (level.getGameRules().get(net.minecraft.world.level.gamerules.GameRules.ENTITY_DROPS)) {
+                for (SimpleContainer inventory : List.of(cargo, overflow, supplies)) {
+                    for (int slot = 0; slot < inventory.getContainerSize(); slot++) {
+                        ItemStack stack = inventory.removeItemNoUpdate(slot);
+                        if (!stack.isEmpty()) {
+                            spawnAtLocation(level, stack);
+                        }
+                    }
+                }
+            }
+        }
+        super.remove(reason);
+    }
+
+    @Override
+    protected void readAdditionalSaveData(ValueInput input) {
+        railRoot = input.read("Rail", BlockPos.CODEC).orElse(null);
+        railRoute = input.getIntOr("RailRoute", -1);
+        links[0] = input.read("Front", UUIDUtil.CODEC).orElse(null);
+        links[1] = input.read("Rear", UUIDUtil.CODEC).orElse(null);
+        working = input.getBooleanOr("Working", false);
+        entityData.set(HANDBRAKE, input.getBooleanOr("Handbrake", false));
+        entityData.set(DOORS, input.getIntOr("Doors", 0) & 3);
+        handbrakeMotion = new PartMotion(handbrakeApplied() ? 90 : 0);
+        leftDoorMotion = new PartMotion(doorOpen(true) ? 1 : 0);
+        rightDoorMotion = new PartMotion(doorOpen(false) ? 1 : 0);
+        loadInventory(input, "Cargo", cargo);
+        loadInventory(input, "Overflow", overflow);
+        loadInventory(input, "Supplies", supplies);
+    }
+
+    @Override
+    protected void addAdditionalSaveData(ValueOutput output) {
+        if (railRoot != null) {
+            output.store("Rail", BlockPos.CODEC, railRoot);
+            output.putInt("RailRoute", railRoute);
+        }
+        if (links[0] != null) {
+            output.store("Front", UUIDUtil.CODEC, links[0]);
+        }
+        if (links[1] != null) {
+            output.store("Rear", UUIDUtil.CODEC, links[1]);
+        }
+        output.putBoolean("Working", working);
+        output.putBoolean("Handbrake", handbrakeApplied());
+        if (kind == Kind.BOXCAR) output.putInt("Doors", entityData.get(DOORS));
+        saveInventory(output, "Cargo", cargo);
+        saveInventory(output, "Overflow", overflow);
+        saveInventory(output, "Supplies", supplies);
+    }
+
+    private static void loadInventory(ValueInput input, String key, SimpleContainer inventory) {
+        int slot = 0;
+        for (ItemStack stack : input.listOrEmpty(key, ItemStack.OPTIONAL_CODEC)) {
+            if (slot >= inventory.getContainerSize()) {
+                break;
+            }
+            // Retain stacks saved before a kit's stack limit changed.
+            inventory.getItems().set(slot++, stack);
+        }
+        inventory.setChanged();
+    }
+
+    private static void saveInventory(ValueOutput output, String key, SimpleContainer inventory) {
+        var list = output.list(key, ItemStack.OPTIONAL_CODEC);
+        for (int slot = 0; slot < inventory.getContainerSize(); slot++) {
+            list.add(inventory.getItem(slot));
+        }
+    }
+
+    private static void message(Player player, String key) {
+        player.sendOverlayMessage(Component.translatable("message.trainmod." + key));
+    }
+
+    private static final class SupplyMenu extends ChestMenu {
+        SupplyMenu(int id, Inventory player, SimpleContainer items) {
+            super(MenuType.GENERIC_9x1, id, player, items, 1);
+        }
+
+        @Override
+        protected Slot addSlot(Slot slot) {
+            if (slots.size() >= 9) {
+                return super.addSlot(slot);
+            }
+            int index = slots.size();
+            return super.addSlot(new Slot(slot.container, index, slot.x, slot.y) {
+                @Override
+                public boolean mayPlace(ItemStack stack) {
+                    return switch (index) {
+                        case RAIL_SUPPLY -> TrackWork.railSupply(stack);
+                        case GRAVEL_SUPPLY -> stack.is(Items.GRAVEL);
+                        case STONE_SUPPLY -> stack.is(Items.COBBLESTONE);
+                        default -> false;
+                    };
+                }
+            });
+        }
+    }
+}

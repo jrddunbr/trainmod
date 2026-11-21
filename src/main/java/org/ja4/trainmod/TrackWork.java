@@ -1,0 +1,245 @@
+package org.ja4.trainmod;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import net.minecraft.core.BlockPos;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.SimpleContainer;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.vehicle.minecart.AbstractMinecart;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.common.util.BlockSnapshot;
+import net.neoforged.neoforge.event.level.BlockEvent;
+import net.neoforged.neoforge.event.level.block.BreakBlockEvent;
+
+final class TrackWork {
+    private TrackWork() {}
+
+    record Issue(String key, Object... details) {
+        Component message() { return Component.translatable("message.trainmod." + key, details); }
+    }
+
+    private static Issue at(String key, BlockPos pos, Object... reason) {
+        Object[] details = new Object[reason.length + 1];
+        details[0] = pos.toShortString();
+        System.arraycopy(reason, 0, details, 1, reason.length);
+        return new Issue(key, details);
+    }
+
+    static Issue extendIfNeeded(ServerLevel level, ServerPlayer driver, TrainVehicle bore,
+                                 RailNetwork.Position position, List<TrainVehicle> trailing) {
+        Vec3 start = position.point();
+        Vec3 facing = position.tangent();
+        if (!level.getEntitiesOfClass(BufferStop.Mounted.class, AABB.ofSize(start, 5, 2, 5), stop -> {
+            Vec3 offset = stop.position().subtract(start);
+            double ahead = offset.dot(facing);
+            return ahead >= 0 && ahead < 2.25 && offset.subtract(facing.scale(ahead)).lengthSqr() < 0.36;
+        }).isEmpty()) {
+            return new Issue("buffer_reached");
+        }
+        // Diagonal cuts meet block corners farther ahead of the drill than square cuts do.
+        double lookahead = bore.kind.length / 2.0 + (Math.abs(facing.x * facing.z) > 0.1 ? 1.10 : 0.5);
+        RailNetwork.Rail rail;
+        boolean end;
+        while (true) {
+            rail = position.rail();
+            end = position.forward() > 0;
+            double distance = end ? rail.path().length - position.distance() : position.distance();
+            Vec3 exit = rail.path().tangent(end ? rail.path().length : 0).scale(position.forward());
+            if (distance > lookahead) return null;
+            RailNetwork.Position connected = RailNetwork.next(level, rail, end);
+            if (connected == null) {
+                if (Math.abs(facing.y) > 0.001 || exit.dot(facing) < 0.999
+                    || Math.abs(rail.end(end).y - position.point().y) > 0.001) return new Issue("bore_heading");
+                break;
+            }
+            if (connected.tangent().dot(facing) < 0.999) return null;
+            lookahead -= distance;
+            position = connected;
+        }
+        BlockPos next = BlockPos.containing(rail.end(end).add(facing.scale(0.15)));
+        if (!level.isLoaded(next)) return at("bore_unloaded", next);
+        if (RailNetwork.isRail(level.getBlockState(next))) return at("bore_misaligned", next);
+        if (level.getBlockState(next).is(Trainmod.BUFFER_STOP.get())) {
+            return new Issue("buffer_reached");
+        }
+        return excavate(level, driver, bore, next, facing, trailing);
+    }
+
+    private static Issue excavate(ServerLevel level, ServerPlayer driver, TrainVehicle bore, BlockPos next,
+                                  Vec3 heading, List<TrainVehicle> trailing) {
+        int dx = (int) Math.round(heading.x), dz = (int) Math.round(heading.z);
+        int rotation = RailwayBlocks.Ballast.heading((float) Math.toDegrees(Math.atan2(-heading.x, heading.z)));
+        Map<BlockPos, BlockState> changes = new LinkedHashMap<>();
+        changes.put(next.below(2), Blocks.COBBLESTONE.defaultBlockState());
+        changes.put(next.below(), Blocks.GRAVEL.defaultBlockState());
+        for (BlockPos base : slice(next, dx, dz)) {
+            for (int height = 0; height < 4; height++) {
+                BlockPos cell = base.above(height);
+                AABB box = new AABB(cell);
+                var living = level.getEntitiesOfClass(LivingEntity.class, box, entity -> entity != driver);
+                if (!living.isEmpty()) return at("bore_entity", cell, living.getFirst().getDisplayName());
+                var cars = level.getEntitiesOfClass(TrainVehicle.class, box, car -> car != bore);
+                if (!cars.isEmpty()) return at("bore_entity", cell, cars.getFirst().getDisplayName());
+                var carts = level.getEntitiesOfClass(AbstractMinecart.class, box);
+                if (!carts.isEmpty()) return at("bore_entity", cell, carts.getFirst().getDisplayName());
+                if (!level.getEntitiesOfClass(BufferStop.Mounted.class, box).isEmpty()) return new Issue("buffer_reached");
+                changes.put(cell, Blocks.AIR.defaultBlockState());
+            }
+        }
+        changes.put(next, Trainmod.TRACK.get(TrackGeometry.Kind.STRAIGHT).get().segment(rotation, true, 0));
+        List<ItemStack> drops = new ArrayList<>();
+        for (var entry : changes.entrySet()) {
+            BlockPos cell = entry.getKey();
+            if (!level.isInWorldBounds(cell)) return at("bore_world_limit", cell);
+            if (!level.isLoaded(cell)) return at("bore_unloaded", cell);
+            if (!level.mayInteract(driver, cell)) return at("bore_protected", cell);
+            BlockState old = level.getBlockState(cell);
+            if (old == entry.getValue() || old.isAir() || old.liquid()) {
+                continue;
+            }
+            if (RailNetwork.isRail(old)) return at("bore_track_in_cut", cell);
+            if (old.is(Trainmod.BUFFER_STOP.get())) return new Issue("buffer_reached");
+            if (old.hasBlockEntity()) return at("bore_block_entity", cell, old.getBlock().getName());
+            if (old.getDestroySpeed(level, cell) < 0) return at("bore_unbreakable", cell, old.getBlock().getName());
+            if (NeoForge.EVENT_BUS.post(new BreakBlockEvent(level, cell, old, driver)).isCanceled()) {
+                return at("bore_protected", cell);
+            }
+            drops.addAll(Block.getDrops(old, level, cell, null, driver, new ItemStack(Items.IRON_PICKAXE)));
+        }
+        boolean gravel = !level.getBlockState(next.below()).is(Blocks.GRAVEL);
+        boolean stone = !level.getBlockState(next.below(2)).is(Blocks.COBBLESTONE);
+        if (!railSupply(bore.supplies.getItem(TrainVehicle.RAIL_SUPPLY))) return new Issue("bore_need_rail");
+        if (gravel && !bore.supplies.getItem(TrainVehicle.GRAVEL_SUPPLY).is(Items.GRAVEL)) return new Issue("bore_need_gravel");
+        if (stone && !bore.supplies.getItem(TrainVehicle.STONE_SUPPLY).is(Items.COBBLESTONE)) return new Issue("bore_need_stone");
+        List<SimpleContainer> cargo = new ArrayList<>();
+        trailing.forEach(car -> cargo.add(car.cargo));
+        cargo.add(bore.cargo);
+        cargo.add(bore.overflow);
+        List<SimpleContainer> stagedCargo = new ArrayList<>();
+        for (SimpleContainer inventory : cargo) {
+            SimpleContainer copy = new SimpleContainer(inventory.getContainerSize());
+            copyInventory(inventory, copy);
+            stagedCargo.add(copy);
+        }
+        for (ItemStack drop : drops) {
+            ItemStack remaining = drop;
+            for (SimpleContainer inventory : stagedCargo) {
+                remaining = inventory.addItem(remaining);
+                if (remaining.isEmpty()) {
+                    break;
+                }
+            }
+            if (!remaining.isEmpty()) {
+                return at("bore_full", next, drop.getHoverName());
+            }
+        }
+        if (!apply(level, driver, changes, level.getBlockState(next.below()))) {
+            return at("bore_place_denied", next);
+        }
+        for (int i = 0; i < cargo.size(); i++) {
+            copyInventory(stagedCargo.get(i), cargo.get(i));
+        }
+        bore.supplies.removeItem(TrainVehicle.RAIL_SUPPLY, 1);
+        if (gravel) {
+            bore.supplies.removeItem(TrainVehicle.GRAVEL_SUPPLY, 1);
+        }
+        if (stone) {
+            bore.supplies.removeItem(TrainVehicle.STONE_SUPPLY, 1);
+        }
+        return null;
+    }
+
+    private static List<BlockPos> slice(BlockPos center, int dx, int dz) {
+        BlockPos low = center.offset(-dz, 0, dx);
+        BlockPos high = center.offset(dz, 0, -dx);
+        if (dx == 0 || dz == 0) return List.of(low, center, high);
+        // Clear the slivers at the diagonal corners, including the shoulders just behind the face.
+        return List.of(center, low, high, center.offset(-dx, 0, 0), center.offset(dx, 0, 0),
+            center.offset(0, 0, -dz), center.offset(0, 0, dz),
+            center.offset(-2 * dx, 0, 0), center.offset(0, 0, -2 * dz));
+    }
+
+    static boolean railSupply(ItemStack stack) {
+        return stack.is(Items.RAIL) || stack.is(Trainmod.TRACK_ITEMS.get(TrackGeometry.Kind.STRAIGHT).get());
+    }
+
+    static boolean ballast(ServerLevel level, ServerPlayer driver, BlockPos below) {
+        if (!level.isLoaded(below) || !level.mayInteract(driver, below)) return false;
+        BlockState trackState = level.getBlockState(below.above());
+        if (!RailNetwork.isRail(trackState) || trackState.getBlock() instanceof TrackBlock track && !track.kind.hasBallast()) {
+            return false;
+        }
+        BlockState state = level.getBlockState(below);
+        RailNetwork.Rail rail = RailNetwork.railAt(level, below.above());
+        if (!state.is(Blocks.GRAVEL) || rail == null
+            || NeoForge.EVENT_BUS.post(new BreakBlockEvent(level, below, state, driver)).isCanceled()) {
+            return false;
+        }
+        Vec3 tangent = rail.path().tangent(rail.project(TrackGeometry.origin(below.above())));
+        int heading = RailwayBlocks.Ballast.heading((float) Math.toDegrees(Math.atan2(-tangent.x, tangent.z)));
+        BlockState ballast = Trainmod.BALLAST.get().defaultBlockState().setValue(TrackBlock.ROTATION, heading);
+        return apply(level, driver, Map.of(below, ballast), level.getBlockState(below.below()));
+    }
+
+    static boolean apply(ServerLevel level, ServerPlayer actor, Map<BlockPos, BlockState> changes, BlockState against) {
+        List<BlockSnapshot> snapshots = new ArrayList<>();
+        int quiet = Block.UPDATE_SKIP_ALL_SIDEEFFECTS;
+        for (var entry : changes.entrySet()) {
+            BlockPos pos = entry.getKey();
+            if (level.getBlockState(pos) == entry.getValue()) {
+                continue;
+            }
+            BlockSnapshot snapshot = BlockSnapshot.create(level.dimension(), level, pos, quiet);
+            if (!level.setBlock(pos, entry.getValue(), quiet)) {
+                rollback(snapshots, quiet);
+                return false;
+            }
+            snapshots.add(snapshot);
+        }
+        if (snapshots.isEmpty()) {
+            return true;
+        }
+        BlockEvent.EntityPlaceEvent event = snapshots.size() == 1
+            ? new BlockEvent.EntityPlaceEvent(snapshots.getFirst(), against, actor)
+            : new BlockEvent.EntityMultiPlaceEvent(snapshots, against, actor);
+        if (NeoForge.EVENT_BUS.post(event).isCanceled()) {
+            rollback(snapshots, quiet);
+            return false;
+        }
+        for (BlockSnapshot snapshot : snapshots) {
+            BlockPos pos = snapshot.getPos();
+            BlockState state = level.getBlockState(pos);
+            level.markAndNotifyBlock(pos, level.getChunkAt(pos), snapshot.getState(), state,
+                Block.UPDATE_ALL, Block.UPDATE_LIMIT);
+            if (state.getBlock() instanceof TrackBlock.Turnout turnout && turnout.panel(state) != null) {
+                level.scheduleTick(pos, state.getBlock(), 1);
+            }
+        }
+        return true;
+    }
+
+    private static void rollback(List<BlockSnapshot> snapshots, int flags) {
+        for (BlockSnapshot snapshot : snapshots.reversed()) {
+            snapshot.restore(flags);
+        }
+    }
+
+    private static void copyInventory(SimpleContainer from, SimpleContainer to) {
+        for (int slot = 0; slot < from.getContainerSize(); slot++) {
+            to.getItems().set(slot, from.getItem(slot).copy());
+        }
+        to.setChanged();
+    }
+}

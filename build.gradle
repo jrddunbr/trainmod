@@ -1,0 +1,87 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version '2.0.148'
+}
+
+repositories { mavenCentral() }
+
+version = '0.2.17'
+group = 'org.ja4.trainmod'
+java.toolchain.languageVersion = JavaLanguageVersion.of(25)
+
+neoForge {
+    version = '26.3.0.115'
+    runs {
+        client {
+            client()
+            environment 'ALSOFT_DRIVERS', 'pulse'
+            if (providers.gradleProperty('clientAuth').isPresent()) {
+                devLogin = true
+            } else {
+                programArguments.addAll '--username', 'jrddunbr'
+            }
+            if (providers.gradleProperty('clientSmoke').isPresent()) {
+                gameDirectory = project.file('run/client-smoke')
+                systemProperty 'trainmod.clientSmoke', 'true'
+                programArguments.addAll '--quickPlaySingleplayer', 'Trainmod Smoke'
+            }
+        }
+        server {
+            server()
+            programArgument '--nogui'
+        }
+        gameTestServer {
+            type = 'gameTestServer'
+            programArguments.addAll '--tests', 'trainmod:*'
+            gameDirectory = project.file('run/game-test')
+        }
+    }
+    mods {
+        trainmod {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+dependencies {
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.13.4'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.13.4'
+}
+tasks.named('test') { useJUnitPlatform() }
+
+sourceSets {
+    test {
+        compileClasspath += main.compileClasspath
+        runtimeClasspath += main.compileClasspath
+    }
+    gameTest {
+        compileClasspath += main.output.classesDirs + main.compileClasspath
+        runtimeClasspath += main.output.classesDirs + main.compileClasspath
+    }
+    assetGen {
+        compileClasspath += main.output.classesDirs + main.compileClasspath
+        runtimeClasspath += main.output.classesDirs + main.compileClasspath
+    }
+}
+
+def generateAssets = tasks.register('generateTrainAssets', JavaExec) {
+    dependsOn tasks.named('compileAssetGenJava')
+    classpath = sourceSets.assetGen.runtimeClasspath
+    mainClass = 'org.ja4.trainmod.TrainAssets'
+    def directory = layout.buildDirectory.dir('generated/trainAssets')
+    outputs.dir(directory)
+    doFirst { project.delete(directory) }
+    args directory.get().asFile.absolutePath
+}
+tasks.named('processResources') { from(generateAssets) }
+
+neoForge {
+    mods {
+        trainmod { sourceSet sourceSets.gameTest }
+    }
+}
+
+tasks.named('processResources') {
+    from('LICENSE')
+    from('README.md') { rename { 'TRAINMOD-GUIDE.md' } }
+}
