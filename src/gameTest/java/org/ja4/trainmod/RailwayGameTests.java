@@ -41,12 +41,25 @@ final class RailwayGameTests {
         new Case("flat_ground_grades", RailwayGameTests::flatGroundGrades),
         new Case("ballast_steps", RailwayGameTests::ballastSteps),
         new Case("crossovers", RailwayGameTests::crossovers),
+        new Case("switch_point_clearance", RailwayGameTests::switchPointClearance),
+        new Case("diagonal_turnouts_and_rising_curves", RailwayGameTests::diagonalTurnoutsAndRisingCurves),
         new Case("scissor_stands", RailwayGameTests::scissorStands),
         new Case("visible_freight_and_doors", RailwayGameTests::visibleFreightAndDoors),
         new Case("placement_previews", RailwayGameTests::placementPreviews),
         new Case("freight_riders_and_brakes", RailwayGameTests::freightRidersAndBrakes),
         new Case("bore_drives_and_lays_rail", RailwayGameTests::boreDrivesAndLaysRail),
-        new Case("redstone_and_signal", RailwayGameTests::redstoneAndSignal),
+        new Case("turnout_redstone", RailwayGameTests::turnoutRedstone),
+        new Case("fuel_and_legacy_stock", RailwayAdditionsGameTest::fuelAndLegacyStock),
+        new Case("steam_tender_controls", RailwayAdditionsGameTest::steamTenderControls),
+        new Case("touching_tender", RailwayAdditionsGameTest::touchingTender),
+        new Case("powered_impact_and_crew", RailwayAdditionsGameTest::poweredImpactAndCrew),
+        new Case("equal_locomotive_speeds", RailwayAdditionsGameTest::equalLocomotiveSpeeds),
+        new Case("electric_reserve", RailwayAdditionsGameTest::electricReserve),
+        new Case("catenary_routes", RailwayAdditionsGameTest::catenaryRoutes),
+        new Case("regulator_cargo", RailwayAdditionsGameTest::regulatorCargo),
+        new Case("regulator_grade", RailwayAdditionsGameTest::regulatorGrade),
+        new Case("bore_tickets", RailwayAdditionsGameTest::boreTickets),
+        new Case("bridges_and_cabin", RailwayAdditionsGameTest::bridgesAndCabin),
         new Case("coupled_movement", RailwayGameTests::coupledMovement),
         new Case("impact_coupling", RailwayGameTests::impactCoupling),
         new Case("coupling_notice", RailwayGameTests::couplingNotice),
@@ -220,13 +233,17 @@ final class RailwayGameTests {
             var kind = entry.getKey();
             var stack = new ItemStack(entry.getValue().get());
             int max = stack.getMaxStackSize();
+            int largest = 0;
             for (int rotation : kind.rotations()) {
                 for (boolean left : new boolean[]{true, false}) {
-                    int blocks = kind.shape(rotation, left).cells().size();
-                    test.assertTrue(max * blocks <= 64 && (max + 1) * blocks > 64,
-                        kind + " stacks the greatest number of complete kits that fit in 64 rail blocks");
+                    for (boolean diagonalLow : kind.gradedCurve() ? new boolean[]{false, true} : new boolean[]{false}) {
+                        int blocks = kind.shape(rotation, left, true, diagonalLow).cells().size();
+                        largest = Math.max(largest, blocks);
+                        test.assertTrue(max * blocks <= 64, kind + " kits stay within 64 rail blocks in every orientation");
+                    }
                 }
             }
+            test.assertTrue((max + 1) * largest > 64, kind + " stack size accounts for its largest footprint");
         }
         try {
             BlockPos first = test.absolutePos(new BlockPos(0, 12, 0));
@@ -383,17 +400,239 @@ final class RailwayGameTests {
 
     private static void crossovers(GameTestHelper test) {
         var level = test.getLevel();
-        BlockPos root = test.absolutePos(new BlockPos(0, 117, 0));
-        piece(level, root, TrackGeometry.Kind.CROSSOVER_90, 0, true);
-        straight(level, root.north(3), 0);
-        straight(level, root.west(3), 12);
-        var fromNorth = RailNetwork.advance(level, at(level, root.north(3)), 4.8);
-        var west = RailNetwork.locate(level, root.west(3), TrackGeometry.origin(root.west(3)), new Vec3(1, 0, 0));
-        var fromWest = RailNetwork.advance(level, west, 4.8);
-        test.assertTrue(fromNorth != null && fromNorth.rail().route() == 0
-            && fromWest != null && fromWest.rail().route() == 1, "90-degree routing preserves both crossing tracks");
+        BlockPos site = test.absolutePos(new BlockPos(0, 117, 0));
+        for (var kind : List.of(TrackGeometry.Kind.CROSSOVER_90, TrackGeometry.Kind.CROSSOVER_45)) {
+            boolean diagonal = kind == TrackGeometry.Kind.CROSSOVER_45;
+            BlockPos root = diagonal ? site.above(5) : site;
+            var compact = kind.shape(0, true);
+            var legacy = kind.shape(0, true, false);
+            test.assertTrue(compact.cells().size() == 5 && legacy.cells().size() == 9,
+                "A compact crossing removes one segment from each approach");
+            piece(level, root, kind, 0, true);
+            straight(level, root.north(2), 0);
+            BlockPos side = diagonal ? root.offset(-2, 0, -2) : root.west(2);
+            straight(level, side, diagonal ? 14 : 12);
+            var fromNorth = RailNetwork.advance(level, at(level, root.north(2)), 2.8);
+            var west = RailNetwork.locate(level, side, TrackGeometry.origin(side), new Vec3(1, 0, diagonal ? 1 : 0));
+            var fromWest = RailNetwork.advance(level, west, 2.8);
+            test.assertTrue(fromNorth != null && fromNorth.rail().root().equals(root) && fromNorth.rail().route() == 0
+                && fromWest != null && fromWest.rail().root().equals(root) && fromWest.rail().route() == 1,
+                "Both compact crossing routes connect to their shortened approaches");
 
+            BlockPos older = root.above(1);
+            for (int i = 0; i < legacy.cells().size(); i++) {
+                BlockPos cell = older.offset(legacy.cells().get(i));
+                level.setBlockAndUpdate(cell.below(), Blocks.STONE.defaultBlockState());
+                level.setBlockAndUpdate(cell, Trainmod.TRACK.get(kind).get().defaultBlockState().setValue(TrackBlock.INDEX, i));
+            }
+            var old = RailNetwork.physicalRailsAt(level, older);
+            test.assertTrue(old.size() == 2 && old.getFirst().cells().size() == 9,
+                "Saved nine-segment crossings keep their original paths and segment indices");
+        }
         test.succeed();
+    }
+
+    private static void switchPointClearance(GameTestHelper test) {
+        var level = test.getLevel();
+        BlockPos root = test.absolutePos(new BlockPos(0, 254, 0));
+        var kind = TrackGeometry.Kind.TURNOUT_PARALLEL_LONG;
+        piece(level, root, kind, 0, true);
+        BlockPos stand = root.west();
+        level.setBlockAndUpdate(stand.below(), Blocks.STONE.defaultBlockState());
+        level.setBlockAndUpdate(stand, Trainmod.STAND.get().defaultBlockState());
+        var far = vehicle(level, TrainVehicle.Kind.BOXCAR, root.south(12));
+        Vec3 original = far.position();
+        test.useBlock(test.relativePos(stand));
+        test.assertTrue(level.getBlockState(root).getValue(BlockStateProperties.POWERED),
+            "Stock beyond the point rails leaves the switch free to throw");
+        var trailingRoute = far.cursor();
+        test.assertTrue(trailingRoute != null && trailingRoute.rail().route() == 0
+            && trailingRoute.point().distanceToSqr(original) < 0.0001
+            && RailNetwork.advance(level, trailingRoute, -20) == null,
+            "Stock stays on the unselected approach and stops short of its closed points");
+
+        var rail = RailNetwork.railAt(level, root);
+        var panel = SwitchLayout.of(kind, kind.shape(0, true)).panels().getFirst();
+        double center = panel.second().distance(1) + SwitchLayout.POINT_CLEARANCE + 0.8;
+        far.moveToRail(new RailNetwork.Position(rail, center, 1));
+        test.assertTrue(RailNetwork.panelOccupied(level, root, panel),
+            "A vehicle's end can foul the points while its center is more than two blocks clear");
+        test.useBlock(test.relativePos(stand));
+        test.assertTrue(level.getBlockState(root).getValue(BlockStateProperties.POWERED)
+            && level.getBlockState(stand).getValue(RailwayBlocks.Stand.PENDING), "The throw waits for the nearby vehicle to clear");
+        far.discard();
+        test.succeed();
+    }
+
+    private static void diagonalTurnoutsAndRisingCurves(GameTestHelper test) {
+        var level = test.getLevel();
+        for (var kind : TrackGeometry.Kind.values()) {
+            if (!kind.turnout()) continue;
+            for (int rotation : List.of(2, 6, 10, 14)) {
+                for (boolean left : new boolean[]{true, false}) {
+                    var shape = kind.shape(rotation, left);
+                    var tangent = shape.routes().getFirst().tangent(0);
+                    test.assertTrue(Math.abs(tangent.x * tangent.z) > 0.49 && shape.cells().size() <= 48,
+                        kind + " diagonal entrance and segment count " + shape.cells().size());
+                    if (kind.parallelTurnout()) {
+                        double compactGap = shape.routes().getFirst().endpoint(true).distanceTo(shape.routes().get(1).endpoint(true));
+                        var original = kind.shape(rotation, left, false);
+                        double originalGap = original.routes().getFirst().endpoint(true).distanceTo(original.routes().get(1).endpoint(true));
+                        test.assertTrue(Math.abs(compactGap - 2 * Math.sqrt(2)) < 1e-6
+                            && Math.abs(originalGap - 3 * Math.sqrt(2)) < 1e-6,
+                            "New diagonal parallel exits come in by one diagonal block and old layouts retain their spacing");
+                    }
+                    test.assertTrue(SwitchLayout.of(kind, shape).panels().stream().allMatch(panel -> shape.cells().contains(panel.control())),
+                        kind + " has addressable diagonal switch points");
+                }
+            }
+        }
+        BlockPos turnout = test.absolutePos(new BlockPos(0, 290, 0));
+        var player = test.makeMockServerPlayerInLevel();
+        BlockPos previewRoot = turnout.offset(19, 0, 0);
+        for (BlockPos support : BlockPos.betweenClosed(previewRoot.offset(-12, -1, -12), previewRoot.offset(12, -1, 12))) {
+            level.setBlockAndUpdate(support, Blocks.STONE.defaultBlockState());
+        }
+        for (int rotation : List.of(2, 6, 10, 14)) {
+            Vec3 heading = TrackGeometry.Kind.DIAGONAL.shape(rotation, true).routes().getFirst().tangent(0);
+            BlockPos incoming = BlockPos.containing(TrackGeometry.origin(previewRoot).subtract(heading.scale(1.4)));
+            piece(level, incoming, TrackGeometry.Kind.DIAGONAL, rotation, true);
+            player.setYRot((float) Math.toDegrees(Math.atan2(-heading.x, heading.z)));
+            for (boolean left : new boolean[]{true, false}) {
+                Vec3 side = SwitchLayout.lateral(heading).scale(left ? 0.9 : -0.9);
+                player.setPos(TrackGeometry.origin(incoming).subtract(heading).add(side));
+                Vec3 clickPoint = heading.scale(0.64);
+                for (var switchKind : List.of(TrackGeometry.Kind.TURNOUT_45, TrackGeometry.Kind.WYE, TrackGeometry.Kind.WYE_MEDIUM)) {
+                    var kit = Trainmod.TRACK_ITEMS.get(switchKind).get();
+                    player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(kit));
+                    for (boolean rail : new boolean[]{true, false}) {
+                        var click = rail ? useAt(player, incoming, 0.5 + clickPoint.x, TrackGeometry.RAIL_HEIGHT, 0.5 + clickPoint.z)
+                            : useAt(player, previewRoot.below(), 0.5, 1, 0.5);
+                        var ghost = kit.preview(level, click, player);
+                        test.assertTrue(ghost != null && ghost.supported() && ghost.root().equals(previewRoot)
+                            && ghost.rotation() == rotation && ghost.left() == left
+                            && ghost.equals(TrackItem.findPlacement(level, click, player, switchKind, null)),
+                            switchKind + " previews and places its common points against the diagonal approach " + rotation + "/" + left);
+                    }
+                }
+            }
+            level.setBlockAndUpdate(incoming, Blocks.AIR.defaultBlockState());
+        }
+        var kind = TrackGeometry.Kind.TURNOUT_45;
+        BlockPos approach = turnout.north().west();
+        piece(level, approach, TrackGeometry.Kind.DIAGONAL, 14, true);
+        for (boolean left : new boolean[]{true, false}) {
+            for (BlockPos cell : kind.shape(14, left).cells()) {
+                level.setBlockAndUpdate(turnout.offset(cell).below(), Blocks.STONE.defaultBlockState());
+            }
+        }
+        player.setPos(TrackGeometry.origin(approach).add(1.8, 0, 0));
+        player.setYRot(-45);
+        player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Trainmod.TRACK_ITEMS.get(kind).get()));
+        Trainmod.TRACK_ITEMS.get(kind).get().useOn(useAt(player, approach, 0.94, TrackGeometry.RAIL_HEIGHT, 0.94));
+        var turnoutState = level.getBlockState(turnout);
+        test.assertTrue(turnoutState.is(Trainmod.TRACK.get(kind).get()) && turnoutState.getValue(TrackBlock.ROTATION) == 14,
+            "A regular turnout kit snaps to the diagonal approach");
+        var entry = RailNetwork.advance(level, RailNetwork.locate(level, approach, TrackGeometry.origin(approach),
+            new Vec3(1, 0, 1)), 1.5);
+        test.assertTrue(entry != null && entry.rail().root().equals(turnout), "The diagonal through route is traversable");
+        BlockPos stand = turnout.west(2);
+        var remote = RailwayBlocks.Stand.connection(level, stand);
+        var corner = RailwayBlocks.Stand.connection(level, turnout.west().north());
+        test.assertTrue(remote != null && remote.position().equals(turnout) && corner != null && corner.position().equals(turnout)
+            && RailwayBlocks.Stand.connection(level, turnout.west(3)) == null,
+            "Diagonal points accept a stand two blocks away or across the corner");
+        BlockPos otherPoints = stand.west();
+        piece(level, otherPoints, kind, 4, true);
+        var nearby = RailwayBlocks.Stand.connection(level, stand);
+        test.assertTrue(nearby != null && nearby.position().equals(otherPoints)
+            && RailwayBlocks.Stand.connection(level, otherPoints.west(2)) == null,
+            "Adjacent points take priority and cardinal points retain adjacent reach");
+        for (BlockPos cell : kind.shape(4, true).cells()) level.setBlockAndUpdate(otherPoints.offset(cell), Blocks.AIR.defaultBlockState());
+        level.setBlockAndUpdate(stand.below(), Blocks.STONE.defaultBlockState());
+        level.setBlockAndUpdate(stand, Trainmod.STAND.get().defaultBlockState());
+        var parkedAtPoints = vehicle(level, TrainVehicle.Kind.GONDOLA, turnout);
+        test.useBlock(test.relativePos(stand));
+        test.assertTrue(level.getBlockState(stand).getValue(RailwayBlocks.Stand.PENDING)
+            && !level.getBlockState(stand).getValue(BlockStateProperties.POWERED),
+            "The distant stand waits for the same loading-gauge clearance as an adjacent stand");
+        parkedAtPoints.discard();
+        test.useBlock(test.relativePos(stand));
+        test.useBlock(test.relativePos(stand));
+        var branch = RailNetwork.railAt(level, turnout);
+        test.assertTrue(branch != null && branch.route() == 1, "The distant stand throws the diagonal turnout");
+        Vec3 out = branch.path().tangent(branch.path().length);
+        BlockPos landing = BlockPos.containing(branch.end(true).add(out.scale(0.15)));
+        straight(level, landing, Math.abs(out.x) > 0.9 ? 12 : 0);
+        var exit = RailNetwork.advance(level, new RailNetwork.Position(branch, branch.path().length - 0.25, 1), 0.65);
+        test.assertTrue(exit != null && exit.rail().root().equals(landing), "The angled approach branches onto cardinal track");
+
+        for (var rising : List.of(TrackGeometry.Kind.CURVE_MEDIUM_GRADE, TrackGeometry.Kind.CURVE_LARGE_GRADE)) {
+            BlockPos root = turnout.above(rising == TrackGeometry.Kind.CURVE_MEDIUM_GRADE ? 10 : 19);
+            var shape = rising.shape(0, true);
+            for (BlockPos cell : shape.cells()) {
+                level.setBlockAndUpdate(root.offset(cell.getX(), -1, cell.getZ()), Blocks.STONE.defaultBlockState());
+            }
+            player.setPos(TrackGeometry.origin(root).add(1.5, 0, 0));
+            player.setYRot(0);
+            player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Trainmod.TRACK_ITEMS.get(rising).get()));
+            Trainmod.TRACK_ITEMS.get(rising).get().useOn(useAt(player, root.below(), 0.5, 1, 0.5));
+            var rail = RailNetwork.railAt(level, root);
+            test.assertTrue(rail != null && Math.abs(rail.end(true).y - rail.end(false).y - 1) < 1e-6,
+                rising + " places on level ground and rises one block");
+            Vec3 diagonal = rail.path().tangent(rail.path().length);
+            BlockPos next = BlockPos.containing(rail.end(true).add(diagonal.scale(0.15)));
+            straight(level, next, diagonal.x * diagonal.z > 0 ? 14 : 2);
+            var elevated = RailNetwork.advance(level, at(level, root), rail.path().length);
+            test.assertTrue(elevated != null && elevated.rail().root().equals(next), rising + " joins a raised diagonal");
+        }
+        int height = 0;
+        for (var curve : List.of(TrackGeometry.Kind.CURVE_MEDIUM, TrackGeometry.Kind.CURVE_LARGE,
+                TrackGeometry.Kind.CURVE_MEDIUM_GRADE, TrackGeometry.Kind.CURVE_LARGE_GRADE)) {
+            BlockPos low = turnout.offset(19, height += 4, 0);
+            for (BlockPos support : BlockPos.betweenClosed(low.offset(-13, -1, -13), low.offset(13, -1, 13))) {
+                level.setBlockAndUpdate(support, Blocks.STONE.defaultBlockState());
+            }
+            BlockPos incoming = low.south().east();
+            piece(level, incoming, TrackGeometry.Kind.DIAGONAL, 14, true);
+            player.setPos(TrackGeometry.origin(incoming).add(1, 0, 1));
+            player.setYRot(135);
+            var kit = Trainmod.TRACK_ITEMS.get(curve).get();
+            player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(kit));
+            var click = useAt(player, incoming, 0.06, TrackGeometry.RAIL_HEIGHT, 0.06);
+            var ghost = kit.preview(level, click, player);
+            test.assertTrue(ghost != null && ghost.supported() && ghost.diagonalLow() == curve.gradedCurve()
+                && ghost.equals(TrackItem.findPlacement(level, click, player, curve, null)),
+                curve + " previews from a level diagonal approach");
+            kit.useOn(click);
+            var incomingRail = RailNetwork.locate(level, incoming, TrackGeometry.origin(incoming), new Vec3(-1, 0, -1));
+            var entered = RailNetwork.advance(level, incomingRail, 1);
+            test.assertTrue(entered != null && entered.rail().root().equals(ghost.root())
+                && (!curve.gradedCurve() || level.getBlockState(low).getValue(TrackBlock.DIAGONAL_LOW)),
+                curve + " starts at the diagonal and saves the selected entrance");
+            var route = entered.rail();
+            boolean otherEnd = entered.forward() > 0;
+            Vec3 finish = route.end(otherEnd);
+            Vec3 direction = route.path().tangent(otherEnd ? route.path().length : 0).scale(entered.forward());
+            test.assertTrue(Math.abs(finish.y - route.end(!otherEnd).y - (curve.gradedCurve() ? 1 : 0)) < 1e-6
+                && Math.abs(direction.x * direction.z) < 1e-6, curve + " leads to a cardinal exit at the expected height");
+            BlockPos next = BlockPos.containing(finish.add(direction.scale(0.15)));
+            int rotation = Math.abs(direction.x) > 0.9 ? 12 : 0;
+            if (curve.gradedCurve()) level.setBlockAndUpdate(next.below(2), Blocks.STONE.defaultBlockState());
+            straight(level, next, rotation);
+            var arrived = RailNetwork.advance(level, entered, route.path().length);
+            var returning = arrived == null ? null : RailNetwork.advance(level, arrived, -route.path().length);
+            test.assertTrue(arrived != null && arrived.rail().root().equals(next)
+                && returning != null && returning.rail().root().equals(ghost.root()),
+                curve + " joins the diagonal and cardinal tracks in both directions");
+        }
+        level.getServer().getPlayerList().remove(player);
+        level.setBlockAndUpdate(stand, Blocks.AIR.defaultBlockState());
+        test.runAfterDelay(5, () -> {
+            test.assertTrue(!level.getBlockState(turnout).getValue(BlockStateProperties.POWERED),
+                "Breaking the distant stand clears its power at the points");
+            test.succeed();
+        });
     }
 
     private static void scissorStands(GameTestHelper test) {
@@ -657,16 +896,13 @@ final class RailwayGameTests {
         test.succeed();
     }
 
-    private static void redstoneAndSignal(GameTestHelper test) {
+    private static void turnoutRedstone(GameTestHelper test) {
         var level = test.getLevel();
         BlockPos root = test.absolutePos(new BlockPos(0, 30, 0));
         piece(level, root, TrackGeometry.Kind.WYE, 0, true);
         BlockPos stand = root.west();
         level.setBlockAndUpdate(stand, Trainmod.STAND.get().defaultBlockState());
-        BlockPos signal = root.north().east();
         straight(level, root.north(), 0);
-        level.setBlockAndUpdate(signal, Trainmod.SIGNAL.get().defaultBlockState()
-            .setValue(BlockStateProperties.HORIZONTAL_FACING, Direction.WEST));
         test.assertTrue(RailNetwork.railAt(level, root).end(true).x > root.getX(), "Unpowered wye selects left");
 
         test.onEachTick(() -> {
@@ -680,8 +916,6 @@ final class RailwayGameTests {
                 "Neighbors receive the new redstone signal at the start of the throw");
         });
         test.runAtTickTime(10, () -> {
-            test.assertFalse(level.getBlockState(signal).getValue(BlockStateProperties.POWERED),
-                net.minecraft.network.chat.Component.literal("Empty connected track should clear the signal"));
             vehicle(level, TrainVehicle.Kind.BOXCAR, root);
             test.useBlock(test.relativePos(stand));
         });
@@ -691,8 +925,6 @@ final class RailwayGameTests {
                 && state.getValue(RailwayBlocks.Stand.PENDING), "An occupied turnout queues both the throw and the stand output");
             test.assertTrue(state.getValue(RailwayBlocks.Stand.TARGET) == RailwayBlocks.RouteTarget.LEFT,
                 "The stand indicates the actual locked route");
-            test.assertTrue(level.getBlockState(signal).getValue(BlockStateProperties.POWERED),
-                "Signal detects the occupied route");
             level.getEntitiesOfClass(TrainVehicle.class, new net.minecraft.world.phys.AABB(root).inflate(2))
                 .forEach(net.minecraft.world.entity.Entity::discard);
         });
@@ -735,6 +967,7 @@ final class RailwayGameTests {
             straight(level, start.south(i), 0);
         }
         var engine = vehicle(level, TrainVehicle.Kind.LOCOMOTIVE, start.south(5));
+        engine.supplies.setItem(0, new ItemStack(Trainmod.DIESEL_BUCKET.get()));
         var car = vehicle(level, TrainVehicle.Kind.BOXCAR, start.south());
         ServerPlayer driver = test.makeMockServerPlayerInLevel();
         driver.setPos(engine.position().add(1, 1, 0));
@@ -748,8 +981,8 @@ final class RailwayGameTests {
         engine.interact(driver, InteractionHand.MAIN_HAND, Vec3.ZERO);
         test.assertTrue(engine.getFirstPassenger() == driver, "The locomotive can be ridden");
         test.assertTrue(!engine.isClientAuthoritative(), "Cab movement remains server-controlled");
-        test.assertTrue(Math.abs(engine.getBoundingBox().getXsize() - 1.5) < 0.001
-            && engine.getBoundingBox().getZsize() > 3, "The locomotive fits the 1.5-block loading gauge");
+        test.assertTrue(Math.abs(engine.getBoundingBox().getXsize() - 0.90) < 0.001
+            && engine.getBoundingBox().getZsize() > 3, "The RS3 uses the freight loading gauge");
         byte[] controls = {TrainControls.FORWARD};
         test.onEachTick(() -> engine.receiveControls(driver, controls[0]));
         test.startSequence()
@@ -757,6 +990,7 @@ final class RailwayGameTests {
                 && car.position().z > start.getZ() + 6, "Both vehicles should reach mod rails. Positions: "
                 + (engine.getZ() - start.getZ()) + ", " + (car.getZ() - start.getZ()) + "; ticks=" + engine.tickCount))
             .thenExecute(() -> {
+                test.assertTrue(engine.headlight() == 1, "The leading RS3 headlight lights in forward");
                 test.assertTrue(Math.abs(engine.position().z - car.position().z - contact) < 0.001,
                     "Coupled vehicles maintain spacing");
                 var saved = net.minecraft.world.level.storage.TagValueOutput.createWithContext(
@@ -771,6 +1005,7 @@ final class RailwayGameTests {
             .thenWaitUntil(() -> test.assertTrue(engine.position().z < start.getZ() + 8
                 && car.position().z < start.getZ() + 5, "The locomotive reverses with its coupled car"))
             .thenExecute(() -> {
+                test.assertTrue(engine.headlight() == -1, "The opposite headlight lights in reverse");
                 driver.stopRiding();
                 level.getServer().getPlayerList().remove(driver);
                 level.setChunkForced(chunkX, chunkZ, false);
@@ -965,11 +1200,15 @@ final class RailwayGameTests {
     }
 
     static void piece(ServerLevel level, BlockPos root, TrackGeometry.Kind kind, int rotation, boolean left) {
-        var cells = kind.shape(rotation, left).cells();
+        piece(level, root, kind, rotation, left, false);
+    }
+
+    static void piece(ServerLevel level, BlockPos root, TrackGeometry.Kind kind, int rotation, boolean left, boolean diagonalLow) {
+        var cells = kind.shape(rotation, left, true, diagonalLow).cells();
         for (int index = 0; index < cells.size(); index++) {
             BlockPos cell = root.offset(cells.get(index));
             level.setBlockAndUpdate(cell.below(), Blocks.STONE.defaultBlockState());
-            level.setBlockAndUpdate(cell, Trainmod.TRACK.get(kind).get().segment(rotation, left, index));
+            level.setBlockAndUpdate(cell, Trainmod.TRACK.get(kind).get().segment(rotation, left, index, diagonalLow));
         }
     }
 }

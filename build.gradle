@@ -65,6 +65,11 @@ neoForge {
             } else {
                 programArguments.addAll '--username', 'jrddunbr'
             }
+            if (providers.gradleProperty('clientAdditionsSmoke').isPresent()) {
+                gameDirectory = project.file('run/client-additions-smoke')
+                systemProperty 'trainmod.clientAdditionsSmoke', providers.gradleProperty('clientAdditionsSmoke').get()
+                programArguments.addAll '--quickPlaySingleplayer', 'Trainmod Additions'
+            }
             if (providers.gradleProperty('clientSmoke').isPresent()) {
                 gameDirectory = project.file('run/client-smoke')
                 systemProperty 'trainmod.clientSmoke', 'true'
@@ -136,6 +141,7 @@ tasks.named('processResources') {
 }
 
 tasks.named('jar') {
+    zip64 = true
     manifest.attributes('Implementation-Version': modVersion)
     if (commit) {
         manifest.attributes('Git-Commit': commit)

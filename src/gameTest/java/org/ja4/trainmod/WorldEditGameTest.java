@@ -5,6 +5,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
@@ -102,6 +103,26 @@ final class WorldEditGameTest {
                 pasteIndex++;
             }
         }
+
+        var girder = Trainmod.STEEL_GIRDER.get();
+        var root = test.absolutePos(new BlockPos(0, 253, 0));
+        level.setBlockAndUpdate(root, girder.defaultBlockState().setValue(BridgeBlock.AXIS, Direction.Axis.Z));
+        Object origin = blockPosition.invoke(adapterInstance, root);
+        Object bounds = we("regions.CuboidRegion").getConstructor(vector, vector).newInstance(origin, origin);
+        Object copied = we("extent.clipboard.BlockArrayClipboard").getConstructor(region).newInstance(bounds);
+        clipboard.getMethod("setOrigin", vector).invoke(copied, origin);
+        complete.invoke(null, we("function.operation.ForwardExtentCopy").getConstructor(extent, region, vector, extent, vector)
+            .newInstance(world, bounds, origin, copied, origin));
+        Object holder = holderType.getConstructor(clipboard).newInstance(copied);
+        holderType.getMethod("setTransform", we("math.transform.Transform")).invoke(holder, rotate);
+        Object paste = holderType.getMethod("createPaste", extent).invoke(holder, world);
+        BlockPos target = root.above(2);
+        pasteBuilder.getMethod("to", vector).invoke(paste, blockPosition.invoke(adapterInstance, target));
+        complete.invoke(null, pasteBuilder.getMethod("build").invoke(paste));
+        var placed = level.getBlockState(target);
+        test.assertTrue(placed.is(girder) && placed.getValue(BridgeBlock.AXIS) == Direction.Axis.X,
+            "WorldEdit pastes an ordinary girder block and rotates the span axis");
+
     }
 
     private static Class<?> we(String name) throws ClassNotFoundException {

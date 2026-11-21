@@ -22,7 +22,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
 final class TrackItem extends Item {
-    record Placement(BlockPos root, int rotation, boolean left, TrackGeometry.Shape shape, double score,
+    record Placement(BlockPos root, int rotation, boolean left, boolean diagonalLow, TrackGeometry.Shape shape, double score,
                      List<BlockPos> missingSupports) {
         boolean supported() { return missingSupports.isEmpty(); }
     }
@@ -37,8 +37,8 @@ final class TrackItem extends Item {
     @Override
     public void appendHoverText(ItemStack stack, TooltipContext context, TooltipDisplay display,
                                 Consumer<Component> tooltip, TooltipFlag flag) {
-        tooltip.accept(Component.translatable(kind.grade() ? "tooltip.trainmod.grade"
-            : kind.flexibleStraight() ? "tooltip.trainmod.straight_track"
+        tooltip.accept(Component.translatable(kind.gradedCurve() ? "tooltip.trainmod.rising_curve"
+            : kind.grade() ? "tooltip.trainmod.grade" : kind.flexibleStraight() ? "tooltip.trainmod.straight_track"
             : kind.handed() ? "tooltip.trainmod.handed_track" : "tooltip.trainmod.track")
             .withStyle(ChatFormatting.GRAY));
     }
@@ -86,12 +86,16 @@ final class TrackItem extends Item {
                 && Math.abs(port.outward().x * port.outward().z) > 0.1 && port.outward().dot(look) > 0.5);
             if (candidates.stream().noneMatch(Placement::supported) && !diagonalApproach) {
                 for (int rotation : kind.rotations()) {
-                    var shape = kind.shape(rotation, true);
-                    Vec3 heading = horizontal(shape.routes().getFirst().tangent(0));
-                    double alignment = heading.dot(look);
-                    if (alignment < 0.5) continue;
-                    boolean hand = hand(player, context, heading, TrackGeometry.origin(target), fixedHand);
-                    add(level, player, kind, target, rotation, hand, alignment, candidates, preview);
+                    for (boolean diagonalLow : kind.gradedCurve() ? new boolean[]{false, true} : new boolean[]{false}) {
+                        for (boolean left : new boolean[]{false, true}) {
+                            var shape = kind.shape(rotation, left, true, diagonalLow);
+                            Vec3 heading = horizontal(shape.routes().getFirst().tangent(0));
+                            double alignment = heading.dot(look);
+                            if (alignment < 0.5
+                                || hand(player, context, heading, TrackGeometry.origin(target), fixedHand) != (left != diagonalLow)) continue;
+                            add(level, player, kind, target, rotation, left, diagonalLow, alignment, candidates, preview);
+                        }
+                    }
                 }
             }
         }
@@ -103,24 +107,30 @@ final class TrackItem extends Item {
                                    List<Placement> candidates, boolean preview) {
         for (var port : ports) {
             if (target != null && !target.equals(port.landing())) continue;
-            double bearing = horizontal(port.outward()).dot(look);
+            Vec3 approach = horizontal(port.outward());
+            double bearing = approach.dot(look);
             double distance = port.point().distanceToSqr(context.getClickLocation());
             if (bearing < 0.5 || distance > 2.25) continue;
             Vec3 center = TrackGeometry.origin(port.landing());
-            boolean wantLeft = hand(player, context, horizontal(port.outward()), center, fixedHand);
+            boolean wantLeft = hand(player, context, approach, center, fixedHand);
+            // A diagonal approach leads into the common points of a single turnout.
+            boolean pointsFirst = kind.turnout() && kind != TrackGeometry.Kind.SCISSORS
+                && Math.abs(approach.x * approach.z) > 0.1;
             for (int rotation : kind.rotations()) {
-                for (boolean enteredAtEnd : new boolean[]{false, true}) {
-                    boolean shapeLeft = wantLeft != enteredAtEnd;
-                    var shape = kind.shape(rotation, shapeLeft);
-                    for (var route : shape.routes()) {
-                        Vec3 heading = horizontal(route.tangent(enteredAtEnd ? route.length : 0))
-                            .scale(enteredAtEnd ? -1 : 1);
-                        if (heading.dot(horizontal(port.outward())) < 0.99) continue;
-                        Vec3 start = port.point().subtract(route.endpoint(enteredAtEnd));
-                        BlockPos root = BlockPos.containing(start);
-                        if (TrackGeometry.origin(root).distanceToSqr(start) > 1e-6) continue;
-                        // At a switch throat use one diverging direction per item hand. The stock exits stay available.
-                        add(level, player, kind, root, rotation, shapeLeft, bearing - distance * 0.15, candidates, preview);
+                for (boolean diagonalLow : kind.gradedCurve() ? new boolean[]{false, true} : new boolean[]{false}) {
+                    for (boolean enteredAtEnd : new boolean[]{false, true}) {
+                        if (enteredAtEnd && (kind.gradedCurve() || pointsFirst)) continue;
+                        boolean shapeLeft = wantLeft != (enteredAtEnd != diagonalLow);
+                        var shape = kind.shape(rotation, shapeLeft, true, diagonalLow);
+                        for (var route : shape.routes()) {
+                            Vec3 heading = horizontal(route.tangent(enteredAtEnd ? route.length : 0))
+                                .scale(enteredAtEnd ? -1 : 1);
+                            if (heading.dot(approach) < 0.99) continue;
+                            Vec3 start = port.point().subtract(route.endpoint(enteredAtEnd));
+                            BlockPos root = BlockPos.containing(start);
+                            if (TrackGeometry.origin(root).distanceToSqr(start) > 1e-6) continue;
+                            add(level, player, kind, root, rotation, shapeLeft, diagonalLow, bearing - distance * 0.15, candidates, preview);
+                        }
                     }
                 }
             }
@@ -139,8 +149,8 @@ final class TrackItem extends Item {
     }
 
     private static void add(Level level, Player player, TrackGeometry.Kind kind, BlockPos root,
-                            int rotation, boolean left, double score, List<Placement> candidates, boolean preview) {
-        var shape = kind.shape(rotation, left);
+                            int rotation, boolean left, boolean diagonalLow, double score, List<Placement> candidates, boolean preview) {
+        var shape = kind.shape(rotation, left, true, diagonalLow);
         List<BlockPos> supports = new ArrayList<>();
         for (BlockPos offset : shape.cells()) {
             BlockPos pos = root.offset(offset);
@@ -151,7 +161,7 @@ final class TrackItem extends Item {
                 supports.add(pos.below());
             }
         }
-        candidates.add(new Placement(root, rotation, left, shape, score, List.copyOf(supports)));
+        candidates.add(new Placement(root, rotation, left, diagonalLow, shape, score, List.copyOf(supports)));
     }
 
     static boolean place(ServerLevel level, ServerPlayer player, TrackGeometry.Kind kind, Placement placement) {
@@ -159,7 +169,7 @@ final class TrackItem extends Item {
         var changes = new LinkedHashMap<BlockPos, BlockState>();
         List<BlockPos> cells = placement.shape().cells();
         for (int index = 0; index < cells.size(); index++) {
-            changes.put(placement.root().offset(cells.get(index)), block.segment(placement.rotation(), placement.left(), index));
+            changes.put(placement.root().offset(cells.get(index)), block.segment(placement.rotation(), placement.left(), index, placement.diagonalLow()));
         }
         return TrackWork.apply(level, player, changes, level.getBlockState(placement.root().below()));
     }

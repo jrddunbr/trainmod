@@ -96,6 +96,7 @@ final class ClientDriveSmokeTest {
         }
         trackStart = start;
         TrainVehicle engine = RailwayGameTests.vehicle(level, TrainVehicle.Kind.LOCOMOTIVE, start.south(4));
+        engine.supplies.setItem(0, new net.minecraft.world.item.ItemStack(Trainmod.DIESEL_BUCKET.get()));
         originZ = engine.getZ();
         engineId = engine.getId();
         Vec3 p = engine.position();

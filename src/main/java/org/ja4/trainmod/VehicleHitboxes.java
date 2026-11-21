@@ -9,7 +9,7 @@ import org.jspecify.annotations.Nullable;
 
 final class VehicleHitboxes {
     enum Component {
-        FRONT_COUPLER, REAR_COUPLER, HANDBRAKE, LEFT_DOOR, RIGHT_DOOR;
+        FRONT_COUPLER, REAR_COUPLER, HANDBRAKE, LEFT_DOOR, RIGHT_DOOR, TENDER_SEAT;
 
         int couplerEnd() { return this == FRONT_COUPLER ? 0 : this == REAR_COUPLER ? 1 : -1; }
     }
@@ -49,18 +49,24 @@ final class VehicleHitboxes {
 
     static {
         for (var kind : TrainVehicle.Kind.values()) {
-            var body = VehicleModels.bodyBoxes(kind).stream().map(VehicleHitboxes::bounds).toList();
+            var body = new ArrayList<>(VehicleModels.bodyBoxes(kind).stream().map(VehicleHitboxes::bounds).toList());
+            if (kind == TrainVehicle.Kind.STEAM_LOCOMOTIVE) {
+                VehicleModels.posedSteamGear(kind).stream().map(VehicleHitboxes::bounds).forEach(body::add);
+            }
             var envelope = VehicleModels.forKind(kind).stream().map(VehicleHitboxes::bounds)
                 .reduce(AABB::minmax).orElseThrow();
             List<Target> controls = new ArrayList<>();
             controls.add(new Target(Component.FRONT_COUPLER, coupler(kind, 1)));
             controls.add(new Target(Component.REAR_COUPLER, coupler(kind, -1)));
             if (!kind.powered) controls.add(new Target(Component.HANDBRAKE, handbrake(kind)));
+            if (kind == TrainVehicle.Kind.TENDER) {
+                controls.add(new Target(Component.TENDER_SEAT, new AABB(-0.34, 0.81, -0.74, 0.34, 1.14, 0.26)));
+            }
             if (kind == TrainVehicle.Kind.BOXCAR) {
                 controls.add(door(kind, true));
                 controls.add(door(kind, false));
             }
-            SHAPES.put(kind, new Shape(body, envelope, List.copyOf(controls)));
+            SHAPES.put(kind, new Shape(List.copyOf(body), envelope, List.copyOf(controls)));
         }
     }
 

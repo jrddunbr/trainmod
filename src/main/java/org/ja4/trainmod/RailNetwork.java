@@ -32,6 +32,16 @@ final class RailNetwork {
     record Position(Rail rail, double distance, int forward) {
         Vec3 point() { return rail.point(distance); }
         Vec3 tangent() { return rail.path.tangent(distance).scale(forward); }
+
+        BlockPos trackCell() {
+            double inside = Math.clamp(distance, EPSILON, rail.path.length - EPSILON);
+            BlockPos column = BlockPos.containing(rail.point(inside));
+            // The running rail can rise into the air block above its track segment.
+            for (BlockPos cell : rail.cells) {
+                if (cell.getX() == column.getX() && cell.getZ() == column.getZ()) return cell;
+            }
+            return null;
+        }
     }
 
     private RailNetwork() {}
@@ -67,6 +77,16 @@ final class RailNetwork {
             int[] routes = physical ? java.util.stream.IntStream.range(0, shape.routes().size()).toArray()
                 : track.kind.activeRoutes(track.kind.turnout() && rootState.getValue(BlockStateProperties.POWERED),
                     rootState.getValue(TrackBlock.HAND) == net.minecraft.world.level.block.state.properties.ChestType.LEFT);
+            if (!physical && track.kind.turnout()) {
+                int active = routes[0];
+                int inactive = 1 - active;
+                var closedPath = shape.routes().get(inactive);
+                var panel = SwitchLayout.of(track.kind, shape).panels().getFirst();
+                var blade = inactive == 0 ? panel.first() : panel.second();
+                double stop = Math.min(closedPath.length - 0.05, blade.distance(1) + SwitchLayout.POINT_CLEARANCE);
+                return List.of(new Rail(root, shape.routes().get(active), cells, active, false),
+                    new Rail(root, closedPath.section(stop, closedPath.length), cells, inactive, false, false, true));
+            }
             List<Rail> rails = new ArrayList<>(routes.length);
             for (int route : routes) rails.add(new Rail(root, shape.routes().get(route), cells, route, false));
             return rails;
@@ -158,7 +178,10 @@ final class RailNetwork {
         return actual.getBlock() == expected.getBlock()
             && actual.getValue(TrackBlock.INDEX) == index
             && actual.getValue(TrackBlock.ROTATION).equals(expected.getValue(TrackBlock.ROTATION))
-            && actual.getValue(TrackBlock.HAND) == expected.getValue(TrackBlock.HAND);
+            && actual.getValue(TrackBlock.HAND) == expected.getValue(TrackBlock.HAND)
+            && (!expected.hasProperty(TrackBlock.COMPACT) || actual.getValue(TrackBlock.COMPACT) == expected.getValue(TrackBlock.COMPACT))
+            && (!expected.hasProperty(TrackBlock.DIAGONAL_LOW)
+                || actual.getValue(TrackBlock.DIAGONAL_LOW) == expected.getValue(TrackBlock.DIAGONAL_LOW));
     }
 
     static Position locate(Level level, BlockPos cell, Vec3 point, Vec3 forward) {
@@ -196,63 +219,55 @@ final class RailNetwork {
     }
 
     static Position next(Level level, Rail from, boolean end) {
-        if (!from.open(end)) return null;
+        var connections = connections(level, from, end, false);
+        return connections.isEmpty() ? null : connections.getFirst();
+    }
+
+    static List<Position> physicalConnections(Level level, Rail from, boolean end) {
+        return connections(level, from, end, true);
+    }
+
+    private static List<Position> connections(Level level, Rail from, boolean end, boolean physical) {
+        if (!physical && !from.open(end)) return List.of();
         Vec3 endpoint = from.end(end);
         Vec3 outward = from.path.tangent(end ? from.path.length : 0).scale(end ? 1 : -1);
+        List<Position> found = new ArrayList<>();
         for (BlockPos cell : portCells(endpoint)) {
-            for (Rail rail : railsAt(level, cell, false)) {
+            for (Rail rail : railsAt(level, cell, physical)) {
                 if (rail.root.equals(from.root)) continue;
                 for (boolean candidateEnd : new boolean[]{false, true}) {
-                    if (rail.open(candidateEnd) && joins(rail, candidateEnd, endpoint, outward)) {
-                        return new Position(rail, candidateEnd ? rail.path.length : 0, candidateEnd ? -1 : 1);
+                    if ((physical || rail.open(candidateEnd)) && joins(rail, candidateEnd, endpoint, outward)) {
+                        var connection = new Position(rail, candidateEnd ? rail.path.length : 0, candidateEnd ? -1 : 1);
+                        if (!physical) return List.of(connection);
+                        if (!found.contains(connection)) found.add(connection);
                     }
                 }
             }
         }
-        return null;
-    }
-
-    static boolean turnoutOccupied(ServerLevel level, BlockPos root, TrackGeometry.Shape shape) {
-        List<AABB> volumes = shape.cells().stream().map(root::offset).map(AABB::new)
-            .map(box -> box.inflate(1.25, 1.5, 1.25)).toList();
-        AABB bounds = volumes.getFirst();
-        for (AABB volume : volumes) {
-            bounds = bounds.minmax(volume);
-        }
-        return level.getEntitiesOfClass(TrainVehicle.class, bounds).stream()
-            .filter(vehicle -> vehicle.railRoot() != null)
-            .anyMatch(vehicle -> volumes.stream().anyMatch(volume -> volume.contains(vehicle.position())));
+        return found;
     }
 
     static boolean panelOccupied(ServerLevel level, BlockPos root, SwitchLayout.Panel panel) {
         Vec3 origin = TrackGeometry.origin(root);
-        Vec3 toe = panel.first().path().point(panel.first().distance(0)).add(origin);
-        Vec3 heel = panel.first().path().point(panel.first().distance(1)).add(origin);
-        AABB vicinity = new AABB(toe, heel).inflate(SwitchLayout.POINT_CLEARANCE + 1.05, 1.2,
-            SwitchLayout.POINT_CLEARANCE + 1.05);
+        List<Vec3> points = new ArrayList<>();
+        AABB bounds = null;
+        for (var blade : panel.blades()) {
+            int samples = Math.max(1, (int) Math.ceil(Math.abs(blade.distance(1) - blade.distance(0)) * 16));
+            for (int i = 0; i <= samples; i++) {
+                for (int opening : new int[]{0, 1}) {
+                    Vec3 point = blade.point((double) i / samples, opening).add(origin);
+                    points.add(point);
+                    AABB sample = new AABB(point, point);
+                    bounds = bounds == null ? sample : bounds.minmax(sample);
+                }
+            }
+        }
+        AABB vicinity = bounds.inflate(SwitchLayout.POINT_CLEARANCE);
         return !level.getEntitiesOfClass(TrainVehicle.class, vicinity,
-            vehicle -> vehicle.railRoot() != null && panel.containsVehicle(vehicle.position().subtract(origin))).isEmpty();
-    }
-
-    static boolean occupied(ServerLevel level, Rail rail, double begin, double end) {
-        List<BlockPos> cells = new ArrayList<>();
-        int count = Math.max(1, (int) Math.ceil(Math.abs(end - begin) * 4));
-        for (int i = 0; i <= count; i++) {
-            BlockPos cell = BlockPos.containing(rail.point(net.minecraft.util.Mth.lerp(i / (double) count, begin, end))
-                .add(0, 0.0001, 0));
-            if (!cells.contains(cell)) {
-                cells.add(cell);
-            }
-        }
-        for (BlockPos cell : cells) {
-            AABB box = new AABB(cell).inflate(0.15, 0.35, 0.15);
-            if (!level.getEntitiesOfClass(TrainVehicle.class, box,
-                vehicle -> vehicle.railRoot() != null).isEmpty()
-                || !level.getEntitiesOfClass(AbstractMinecart.class, box).isEmpty()) {
-                return true;
-            }
-        }
-        return false;
+            train -> train.isAlive() && train.foulsPoints(points, SwitchLayout.POINT_CLEARANCE)).isEmpty()
+            || !level.getEntitiesOfClass(AbstractMinecart.class, vicinity, cart -> cart.isAlive()
+                && points.stream().anyMatch(point -> cart.getBoundingBox().distanceToSqr(point)
+                    <= SwitchLayout.POINT_CLEARANCE * SwitchLayout.POINT_CLEARANCE)).isEmpty();
     }
 
     static TrackGeometry.Path vanilla(RailShape shape) {

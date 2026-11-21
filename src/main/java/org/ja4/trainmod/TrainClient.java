@@ -47,12 +47,18 @@ public final class TrainClient {
         EntityHitResult result = ProjectileUtil.getEntityHitResult(viewer, from, to, search,
             entity -> !(entity instanceof TrainVehicle) && filter.test(entity), rangeSqr);
         double nearest = result == null ? rangeSqr : result.getLocation().distanceToSqr(from);
+        boolean holdingCoupler = viewer instanceof net.minecraft.world.entity.player.Player player
+            && (player.getMainHandItem().is(Trainmod.COUPLER.get()) || player.getOffhandItem().is(Trainmod.COUPLER.get()));
         for (var car : viewer.level().getEntitiesOfClass(TrainVehicle.class, search, filter::test)) {
             if (car == viewer || car.getRootVehicle() == viewer.getRootVehicle() && !car.canRiderInteract()) continue;
             var frame = car.renderFrame(partial);
-            var hit = VehicleHitboxes.pick(car, frame.local(from), frame.local(to), partial);
-            if (hit == null) continue;
-            Vec3 point = frame.world(hit.point());
+            Vec3 localFrom = frame.local(from);
+            Vec3 localTo = frame.local(to);
+            var hit = VehicleHitboxes.pick(car, localFrom, localTo, partial);
+            Vec3 local = hit != null ? hit.point() : holdingCoupler
+                ? VehicleHitboxes.of(car.kind).envelope().clip(localFrom, localTo).orElse(null) : null;
+            if (local == null) continue;
+            Vec3 point = frame.world(local);
             double distance = point.distanceToSqr(from);
             if (distance < nearest) {
                 nearest = distance;
@@ -77,7 +83,7 @@ public final class TrainClient {
         return switch (component) {
             case FRONT_COUPLER, REAR_COUPLER -> 0xff56d5ff;
             case HANDBRAKE -> 0xffffb942;
-            case LEFT_DOOR, RIGHT_DOOR -> 0xff68e580;
+            case LEFT_DOOR, RIGHT_DOOR, TENDER_SEAT -> 0xff68e580;
         };
     }
 
@@ -93,6 +99,12 @@ public final class TrainClient {
     }
 
     public static void refreshBallast(LevelExtractor extractor, BlockPos pos, BlockState oldState, BlockState newState) {
+        if (oldState.getBlock() instanceof BridgeBlock || newState.getBlock() instanceof BridgeBlock) {
+            extractor.setSectionRangeDirty(SectionPos.blockToSectionCoord(pos.getX() - 16),
+                SectionPos.blockToSectionCoord(pos.getY() - 4), SectionPos.blockToSectionCoord(pos.getZ() - 16),
+                SectionPos.blockToSectionCoord(pos.getX() + 16), SectionPos.blockToSectionCoord(pos.getY() + 1),
+                SectionPos.blockToSectionCoord(pos.getZ() + 16));
+        }
         boolean ballast = oldState.is(Trainmod.BALLAST.get()) || newState.is(Trainmod.BALLAST.get());
         if (!ballast && BallastSurface.covered(oldState) == BallastSurface.covered(newState)) return;
         // A ballast gap can straddle a section boundary even when neither block is on the boundary.
@@ -111,6 +123,7 @@ public final class TrainClient {
             context -> new VehicleRenderer<>(context, VehicleModels.buffer(), null));
         event.registerBlockEntityRenderer(Trainmod.SWITCH_POINTS.get(), context -> new SwitchPointRenderer());
         event.registerBlockEntityRenderer(Trainmod.SWITCH_STAND.get(), context -> new SwitchStandRenderer());
+        event.registerBlockEntityRenderer(Trainmod.CATENARY_ANCHOR.get(), context -> new CatenaryRenderer());
     }
 
     @SubscribeEvent
@@ -147,6 +160,7 @@ public final class TrainClient {
         BankedCurveModel.register(event);
         RailEndModel.register(event);
         TieModel.register(event);
+        BridgeModel.register(event);
     }
 
     @SubscribeEvent
@@ -156,12 +170,29 @@ public final class TrainClient {
         client.execute(client.levelExtractor::allChanged);
     }
 
+    private static final net.minecraft.client.KeyMapping.Category CONTROLS = new net.minecraft.client.KeyMapping.Category(
+        Identifier.fromNamespaceAndPath(Trainmod.ID, "railway"));
+    private static final net.minecraft.client.KeyMapping HORN = new net.minecraft.client.KeyMapping(
+        "key.trainmod.horn", com.mojang.blaze3d.platform.InputConstants.KEY_H, CONTROLS);
+    private static final net.minecraft.client.KeyMapping BELL = new net.minecraft.client.KeyMapping(
+        "key.trainmod.bell", com.mojang.blaze3d.platform.InputConstants.KEY_B, CONTROLS);
+
+    @SubscribeEvent
+    static void registerKeys(net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent event) {
+        event.registerCategory(CONTROLS);
+        event.register(HORN);
+        event.register(BELL);
+    }
+
     private static int lastVehicle = -1;
     private static byte lastKeys;
 
     @SubscribeEvent
     static void sendControls(ClientTickEvent.Post event) {
         Minecraft client = Minecraft.getInstance();
+        TrainAudio.update(client);
+        boolean bellPressed = false;
+        while (BELL.consumeClick()) bellPressed = true;
         if (client.player == null || !(client.player.getVehicle() instanceof TrainVehicle vehicle) || vehicle.getControllingPassenger() != client.player) {
             lastVehicle = -1;
             return;
@@ -171,6 +202,8 @@ public final class TrainClient {
             if (client.options.keyUp.isDown()) keys |= TrainControls.FORWARD;
             if (client.options.keyDown.isDown()) keys |= TrainControls.REVERSE;
             if (client.options.keyJump.isDown()) keys |= TrainControls.WORK;
+            if (HORN.isDown()) keys |= TrainControls.HORN;
+            if (BELL.isDown() || bellPressed) keys |= TrainControls.BELL;
         }
         if (vehicle.getId() != lastVehicle || keys != lastKeys || client.player.tickCount % 4 == 0) {
             ClientPacketDistributor.sendToServer(new TrainControls(vehicle.getId(), keys));
@@ -188,6 +221,8 @@ public final class TrainClient {
         float leftDoorProgress;
         float rightDoorProgress;
         float handbrakeAngle;
+        float wheelPhase;
+        int headlight;
         final Vec3[] couplerTips = new Vec3[2];
         final Vec3[] couplerVectors = new Vec3[2];
     }
@@ -226,6 +261,11 @@ public final class TrainClient {
         private final float doorTravel;
         private final ModelPart gravel;
         private final ModelPart drawbar;
+        private final List<VehicleModels.Wheel> wheels;
+        private final List<Map<Integer, ModelPart>> wheelParts;
+        private final Map<Integer, ModelPart> rods;
+        private final ModelPart piston;
+        private final List<Map<Integer, ModelPart>> lights;
 
         VehicleRenderer(EntityRendererProvider.Context context, List<VehicleModels.Box> boxes, TrainVehicle.Kind kind) {
             super(context);
@@ -247,7 +287,17 @@ public final class TrainClient {
             brakeX = kind != null ? kind.brakeWheelOffset() : 0;
             brakeY = kind != null ? kind.brakeWheelHeight() / 16 : 0;
             doorTravel = kind == TrainVehicle.Kind.BOXCAR ? VehicleModels.OPEN_DOOR_SHIFT * kind.length / 40 : 0;
-            gravel = kind == TrainVehicle.Kind.GONDOLA ? gravel(kind) : null;
+            gravel = kind == TrainVehicle.Kind.GONDOLA || kind == TrainVehicle.Kind.BALLAST_CAR ? gravel(kind) : null;
+            wheels = kind == TrainVehicle.Kind.STEAM_LOCOMOTIVE ? VehicleModels.steamWheels(kind) : List.of();
+            wheelParts = wheels.stream().map(wheel -> bakeColoredCubes(wheel.boxes())).toList();
+            rods = wheels.isEmpty() ? Map.of() : bakeColoredCubes(VehicleModels.steamRods(kind));
+            piston = wheels.isEmpty() ? null : bakeColoredCubes(List.of(
+                new VehicleModels.Box(0xa9a7a1, -0.31f, -0.34f, 0, 0.62f, 0.68f, 16))).get(0xa9a7a1);
+            lights = kind == TrainVehicle.Kind.LOCOMOTIVE
+                ? List.of(bakeColoredCubes(VehicleModels.headlight(kind, -1, false)),
+                    bakeColoredCubes(VehicleModels.headlight(kind, 1, false)),
+                    bakeColoredCubes(VehicleModels.headlight(kind, -1, true)),
+                    bakeColoredCubes(VehicleModels.headlight(kind, 1, true))) : List.of();
         }
 
         private static ModelPart gravel(TrainVehicle.Kind kind) {
@@ -274,6 +324,8 @@ public final class TrainClient {
                 state.leftDoorProgress = train.doorProgress(true, partial);
                 state.rightDoorProgress = train.doorProgress(false, partial);
                 state.handbrakeAngle = train.handbrakeAngle(partial);
+                state.wheelPhase = train.wheelPhase(partial);
+                state.headlight = train.headlight();
             }
             for (int end = 0; end < 2; end++) {
                 state.couplerVectors[end] = null;
@@ -309,6 +361,16 @@ public final class TrainClient {
             pose.rotateDegrees(Axis.XP, state.pitch);
             pose.rotateDegrees(Axis.ZP, (float) Math.toDegrees(Math.atan(state.bank)));
             submitParts(groups, state, pose, collector);
+            if (!wheels.isEmpty()) submitSteamGear(state, pose, collector);
+            if (!lights.isEmpty()) {
+                for (int end : new int[]{-1, 1}) {
+                    boolean leading = state.headlight == end;
+                    var parts = lights.get((end + 1) / 2 + (leading ? 2 : 0));
+                    int light = leading ? net.minecraft.util.LightCoordsUtil.FULL_BRIGHT : state.lightCoords;
+                    parts.forEach((color, model) -> collector.submitModelPart(model, pose, MATERIAL, light,
+                        OverlayTexture.NO_OVERLAY, null, 0xff000000 | color, state.outlineColor));
+                }
+            }
             if (state.railLayers > 0 && !railLoads.isEmpty()) {
                 submitParts(railLoads.get(state.railLayers - 1), state, pose, collector);
             }
@@ -344,6 +406,39 @@ public final class TrainClient {
                 pose.popPose();
             }
             super.submit(state, pose, collector, camera);
+        }
+
+        private void submitSteamGear(VehicleState state, PoseStack pose, SubmitNodeCollector collector) {
+            for (int i = 0; i < wheels.size(); i++) {
+                var wheel = wheels.get(i);
+                pose.pushPose();
+                pose.translate(0, wheel.y() / 16, wheel.z() / 16);
+                pose.rotateDegrees(Axis.XP, -state.wheelPhase * (float) (16 * TrainVehicle.DRIVER_WHEEL_RADIUS / wheel.radius()));
+                submitParts(wheelParts.get(i), state, pose, collector);
+                pose.popPose();
+            }
+
+            double angle = Math.toRadians(state.wheelPhase);
+            double crankY = Math.sin(angle) * 1.15 / 16;
+            double crankZ = Math.cos(angle) * 1.15 / 16;
+            var rearDriver = wheels.get(1);
+            var frontDriver = wheels.get(2);
+            pose.pushPose();
+            pose.translate(0, rearDriver.y() / 16 + crankY, rearDriver.z() / 16 + crankZ);
+            submitParts(rods, state, pose, collector);
+            pose.popPose();
+
+            var leadingTruck = wheels.get(3);
+            double run = (leadingTruck.z() - frontDriver.z()) / 16 - crankZ;
+            for (int side : new int[]{-1, 1}) {
+                pose.pushPose();
+                pose.translate(side * 0.37, frontDriver.y() / 16 + crankY, frontDriver.z() / 16 + crankZ);
+                pose.rotateDegrees(Axis.XP, (float) Math.toDegrees(Math.atan2(crankY, run)));
+                pose.scale(1, 1, (float) Math.hypot(run, crankY));
+                collector.submitModelPart(piston, pose, MATERIAL, state.lightCoords, OverlayTexture.NO_OVERLAY,
+                    null, 0xffa9a7a1, state.outlineColor);
+                pose.popPose();
+            }
         }
 
         private void submitDoor(Map<Integer, ModelPart> parts, float progress, VehicleState state, PoseStack pose,

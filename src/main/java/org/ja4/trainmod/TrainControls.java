@@ -11,6 +11,8 @@ record TrainControls(int vehicleId, byte keys) implements CustomPacketPayload {
     static final byte FORWARD = 1;
     static final byte REVERSE = 2;
     static final byte WORK = 4;
+    static final byte HORN = 8;
+    static final byte BELL = 16;
     static final Type<TrainControls> TYPE = new Type<>(Identifier.fromNamespaceAndPath(Trainmod.ID, "train_controls"));
 
     static void register(RegisterPayloadHandlersEvent event) {

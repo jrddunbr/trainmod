@@ -10,7 +10,7 @@ import net.minecraft.world.phys.Vec3;
 final class SwitchLayout {
     private static final Map<TrackGeometry.Shape, SwitchLayout> CACHE = new ConcurrentHashMap<>();
     static final double GAUGE = CurveBanking.GAUGE / 2;
-    static final double POINT_CLEARANCE = 1.78;
+    static final double POINT_CLEARANCE = 2.0;
 
     record Blade(int route, TrackGeometry.Path path, boolean reverse, double toe, double heel, double side) {
         double distance(double fraction) {
@@ -42,15 +42,6 @@ final class SwitchLayout {
             return branch.dot(lateral(direction)) > 0;
         }
 
-        boolean containsVehicle(Vec3 center) {
-            for (Blade blade : blades()) {
-                double at = blade.path.project(center);
-                double from = Math.min(blade.distance(0), blade.distance(1)) - POINT_CLEARANCE;
-                double to = Math.max(blade.distance(0), blade.distance(1)) + POINT_CLEARANCE;
-                if (at > from && at < to && blade.path.point(at).distanceToSqr(center) < 1.1) return true;
-            }
-            return false;
-        }
     }
 
     private final List<Panel> panels;

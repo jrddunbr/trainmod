@@ -9,6 +9,7 @@ import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.SoundType;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
@@ -26,6 +27,8 @@ public final class Trainmod {
     private static final DeferredRegister.Entities ENTITIES = DeferredRegister.createEntities(ID);
     private static final DeferredRegister<net.minecraft.world.level.block.entity.BlockEntityType<?>> BLOCK_ENTITIES =
         DeferredRegister.create(Registries.BLOCK_ENTITY_TYPE, ID);
+    private static final DeferredRegister<net.minecraft.sounds.SoundEvent> SOUNDS =
+        DeferredRegister.create(Registries.SOUND_EVENT, ID);
     private static final DeferredRegister<CreativeModeTab> TABS = DeferredRegister.create(Registries.CREATIVE_MODE_TAB, ID);
 
     static final Map<TrackGeometry.Kind, DeferredBlock<TrackBlock>> TRACK = new EnumMap<>(TrackGeometry.Kind.class);
@@ -40,7 +43,7 @@ public final class Trainmod {
                 .toArray(net.minecraft.world.level.block.Block[]::new)));
 
     static final DeferredBlock<RailwayBlocks.Ballast> BALLAST =
-        BLOCKS.registerBlock("ballast", RailwayBlocks.Ballast::new, p -> p.strength(0.7f).noOcclusion());
+        BLOCKS.registerBlock("ballast", RailwayBlocks.Ballast::new, p -> p.strength(0.7f).sound(SoundType.GRAVEL).noOcclusion());
     static final DeferredBlock<RailwayBlocks.Stand> STAND =
         BLOCKS.registerBlock("switch_stand", RailwayBlocks.Stand::new, p -> p.strength(1.5f).noOcclusion().noCollision());
     static final DeferredHolder<net.minecraft.world.level.block.entity.BlockEntityType<?>,
@@ -55,7 +58,44 @@ public final class Trainmod {
     static final DeferredItem<BufferStop.Item> BUFFER_ITEM = ITEMS.registerItem("buffer_stop",
         BufferStop.Item::new, p -> p.useBlockDescriptionPrefix());
     static final DeferredBlock<RailwayBlocks.Signal> SIGNAL =
-        BLOCKS.registerBlock("signal", RailwayBlocks.Signal::new, p -> p.strength(1.5f).noOcclusion().noCollision().lightLevel(s -> 7));
+        BLOCKS.registerBlock("signal", RailwayBlocks.Signal::new, p -> p.strength(1.5f).noOcclusion().noCollision());
+
+    static final DeferredBlock<SignalCabin> SIGNAL_CABIN =
+        BLOCKS.registerBlock("signal_cabin", SignalCabin::new, p -> p.strength(2.5f).noOcclusion());
+    static final DeferredBlock<BridgeBlock> WOOD_TRESTLE = bridge("wood_trestle", BridgeBlock.Kind.TRESTLE,
+        net.minecraft.world.level.block.SoundType.WOOD);
+    static final DeferredBlock<BridgeBlock> STEEL_GIRDER = bridge("steel_girder", BridgeBlock.Kind.GIRDER,
+        net.minecraft.world.level.block.SoundType.METAL);
+    static final DeferredBlock<BridgeBlock> STONE_ARCH = bridge("stone_arch", BridgeBlock.Kind.STONE,
+        net.minecraft.world.level.block.SoundType.STONE);
+    static final DeferredBlock<CatenaryTower> CATENARY_SINGLE = tower("catenary_single", CatenaryTower.Kind.SINGLE);
+    static final DeferredBlock<CatenaryTower> CATENARY_DOUBLE = tower("catenary_double", CatenaryTower.Kind.DOUBLE);
+    static final DeferredBlock<CatenaryTower> CATENARY_GANTRY = tower("catenary_gantry", CatenaryTower.Kind.GANTRY);
+    static final DeferredHolder<net.minecraft.world.level.block.entity.BlockEntityType<?>,
+        net.minecraft.world.level.block.entity.BlockEntityType<CatenaryTower.Anchor>> CATENARY_ANCHOR =
+        BLOCK_ENTITIES.register("catenary_anchor", () -> new net.minecraft.world.level.block.entity.BlockEntityType<>(
+            CatenaryTower.Anchor::new, CATENARY_SINGLE.get(), CATENARY_DOUBLE.get(), CATENARY_GANTRY.get()));
+    static final DeferredItem<Item> DIESEL_BUCKET = ITEMS.registerSimpleItem("diesel_bucket",
+        p -> p.stacksTo(1).craftRemainder(net.minecraft.world.item.Items.BUCKET));
+
+    static final DeferredHolder<net.minecraft.sounds.SoundEvent, net.minecraft.sounds.SoundEvent> WHISTLE = sound("steam_whistle");
+    static final DeferredHolder<net.minecraft.sounds.SoundEvent, net.minecraft.sounds.SoundEvent> HORN = sound("rs3_horn");
+    static final DeferredHolder<net.minecraft.sounds.SoundEvent, net.minecraft.sounds.SoundEvent> BELL = sound("train_bell");
+    static final DeferredHolder<net.minecraft.sounds.SoundEvent, net.minecraft.sounds.SoundEvent> CHUFF = sound("steam_chuff");
+
+    private static DeferredBlock<BridgeBlock> bridge(String id, BridgeBlock.Kind kind, net.minecraft.world.level.block.SoundType sound) {
+        return BLOCKS.registerBlock(id, p -> new BridgeBlock(kind, p), p -> p.strength(2.5f).sound(sound).noOcclusion().dynamicShape());
+    }
+
+    private static DeferredBlock<CatenaryTower> tower(String id, CatenaryTower.Kind kind) {
+        return BLOCKS.registerBlock(id, p -> new CatenaryTower(kind, p),
+            p -> p.strength(2).sound(net.minecraft.world.level.block.SoundType.METAL).noOcclusion());
+    }
+
+    private static DeferredHolder<net.minecraft.sounds.SoundEvent, net.minecraft.sounds.SoundEvent> sound(String name) {
+        var id = net.minecraft.resources.Identifier.fromNamespaceAndPath(ID, name);
+        return SOUNDS.register(name, () -> net.minecraft.sounds.SoundEvent.createVariableRangeEvent(id));
+    }
 
     static final DeferredItem<TrackBuilder> BUILDER =
         ITEMS.registerItem("track_builder", TrackBuilder::new, p -> p.stacksTo(1));
@@ -72,10 +112,17 @@ public final class Trainmod {
     static {
         ITEMS.registerSimpleBlockItem(BALLAST);
         ITEMS.registerSimpleBlockItem(STAND);
-        ITEMS.registerSimpleBlockItem(SIGNAL);
+        var retiredSignal = ITEMS.registerSimpleBlockItem(SIGNAL);
+        ITEMS.registerItem("signal_cabin", p -> new net.minecraft.world.item.DoubleHighBlockItem(SIGNAL_CABIN.get(),
+            p.useBlockDescriptionPrefix()));
+        for (var block : java.util.List.of(WOOD_TRESTLE, STEEL_GIRDER, STONE_ARCH, CATENARY_SINGLE, CATENARY_DOUBLE, CATENARY_GANTRY)) {
+            ITEMS.registerSimpleBlockItem(block);
+        }
         for (TrackGeometry.Kind kind : TrackGeometry.Kind.values()) {
             TRACK.put(kind, BLOCKS.registerBlock(kind.id() + "_rail",
-                p -> kind.turnout() ? new TrackBlock.Turnout(kind, p) : new TrackBlock(kind, p),
+                p -> kind.parallelTurnout() ? new TrackBlock.ParallelTurnout(kind, p)
+                    : kind.turnout() ? new TrackBlock.Turnout(kind, p) : kind.crossing() ? new TrackBlock.Crossing(kind, p)
+                    : kind.gradedCurve() ? new TrackBlock.RisingCurve(kind, p) : new TrackBlock(kind, p),
                 p -> p.strength(0.7f).noCollision().noOcclusion().pushReaction(net.minecraft.world.level.material.PushReaction.POPPED)));
             if (kind != TrackGeometry.Kind.DIAGONAL) {
                 TRACK_ITEMS.put(kind, ITEMS.registerItem(kind.id() + "_rail", p -> new TrackItem(p, kind),
@@ -92,17 +139,25 @@ public final class Trainmod {
         TABS.register("railway", () -> CreativeModeTab.builder()
             .title(Component.translatable("itemGroup.trainmod.railway"))
             .icon(() -> new ItemStack(VEHICLE_ITEMS.get(TrainVehicle.Kind.LOCOMOTIVE).get()))
-            .displayItems((parameters, output) -> ITEMS.getEntries().stream().filter(item -> item != BUILDER).forEach(item -> output.accept(item.get())))
+            .displayItems((parameters, output) -> ITEMS.getEntries().stream().filter(item -> item != BUILDER && item != retiredSignal
+                && (item != DIESEL_BUCKET || parameters.holders().lookupOrThrow(Registries.ITEM)
+                    .get(VehicleFuel.EXTERNAL_DIESEL)
+                    .map(net.minecraft.core.HolderSet::size).orElse(0) == 0)).forEach(item -> output.accept(item.get())))
             .build());
     }
 
     public Trainmod(IEventBus bus, ModContainer mod) {
         mod.registerConfig(ModConfig.Type.CLIENT, ClientConfig.SPEC);
         bus.addListener(TrainControls::register);
+        bus.addListener(BoreTickets::register);
+        SOUNDS.register(bus);
         BLOCKS.register(bus);
         ITEMS.register(bus);
         ENTITIES.register(bus);
         BLOCK_ENTITIES.register(bus);
+        var recipes = DeferredRegister.create(Registries.RECIPE_SERIALIZER, ID);
+        recipes.register("diesel", () -> DieselRecipe.SERIALIZER);
+        recipes.register(bus);
         TABS.register(bus);
     }
 }

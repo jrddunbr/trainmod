@@ -20,7 +20,8 @@ final class TrackGeometry {
         STRAIGHT_8("8-Block Straight"), STRAIGHT_12("12-Block Straight"),
         CROSSOVER_90("90° Diamond Crossing"), CROSSOVER_45("45° Diamond Crossing"),
         TURNOUT_PARALLEL_LONG("Long Parallel Turnout"), SCISSORS("Scissors Crossover"),
-        WYE_MEDIUM("Medium Wye Turnout"), BRIDGE_STRAIGHT("Straight Bridge Rail");
+        WYE_MEDIUM("Medium Wye Turnout"), BRIDGE_STRAIGHT("Straight Bridge Rail"),
+        CURVE_MEDIUM_GRADE("Rising Medium 45° Curve"), CURVE_LARGE_GRADE("Rising Large 45° Curve");
 
         final String title;
 
@@ -32,16 +33,42 @@ final class TrackGeometry {
             return name().toLowerCase(java.util.Locale.ROOT);
         }
 
-        int stackLimit() { return 64 / shape(rotation(0), true).cells().size(); }
+        int stackLimit() {
+            int largest = 0;
+            for (int rotation : rotations()) {
+                largest = Math.max(largest, Math.max(shape(rotation, true).cells().size(), shape(rotation, false).cells().size()));
+                if (gradedCurve()) {
+                    largest = Math.max(largest, Math.max(shape(rotation, true, true, true).cells().size(),
+                        shape(rotation, false, true, true).cells().size()));
+                }
+            }
+            return 64 / largest;
+        }
 
         boolean turnout() {
             return this == TURNOUT_45 || this == TURNOUT_PARALLEL || this == TURNOUT_PARALLEL_LONG
                 || wye() || this == SCISSORS;
         }
 
+        boolean parallelTurnout() { return this == TURNOUT_PARALLEL || this == TURNOUT_PARALLEL_LONG; }
+
+        int parallelRun() { return this == TURNOUT_PARALLEL ? 8 : 14; }
+
+        boolean compactGeometry(int rotation) { return crossing() || parallelTurnout() && (rotation & 2) != 0; }
+
         boolean wye() { return this == WYE || this == WYE_MEDIUM; }
 
-        boolean grade() { return this == GRADE_6 || this == GRADE_8; }
+        boolean grade() { return this == GRADE_6 || this == GRADE_8 || gradedCurve(); }
+
+        boolean gradedCurve() { return this == CURVE_MEDIUM_GRADE || this == CURVE_LARGE_GRADE; }
+
+        int gradeRun() {
+            return switch (this) {
+                case GRADE_6 -> 6;
+                case CURVE_LARGE_GRADE -> 12;
+                default -> 8;
+            };
+        }
 
         boolean crossing() { return this == CROSSOVER_90 || this == CROSSOVER_45; }
 
@@ -59,19 +86,20 @@ final class TrackGeometry {
 
         boolean hasBallast() { return this != BRIDGE_STRAIGHT; }
 
+        boolean diagonalOrientation() { return flexibleStraight() || turnout(); }
+
         List<Integer> rotations() {
-            if (flexibleStraight()) return List.of(0, 2, 4, 6, 8, 10, 12, 14);
+            if (diagonalOrientation()) return List.of(0, 2, 4, 6, 8, 10, 12, 14);
             if (this == DIAGONAL) return List.of(14, 2, 6, 10);
             return List.of(0, 4, 8, 12);
         }
 
         boolean bankedCurve() {
-            return this == CURVE_SMALL || this == CURVE_MEDIUM || this == CURVE_LARGE;
+            return this == CURVE_SMALL || this == CURVE_MEDIUM || this == CURVE_LARGE || gradedCurve();
         }
 
         boolean handed() {
-            return this == CURVE_SMALL || this == CURVE_MEDIUM || this == CURVE_LARGE
-                || this == TURNOUT_45 || this == TURNOUT_PARALLEL || this == TURNOUT_PARALLEL_LONG
+            return bankedCurve() || this == TURNOUT_45 || this == TURNOUT_PARALLEL || this == TURNOUT_PARALLEL_LONG
                 || this == CROSSOVER_45 || this == SCISSORS;
         }
 
@@ -80,7 +108,17 @@ final class TrackGeometry {
         }
 
         Shape shape(int rotation, boolean left) {
-            return SHAPES[ordinal()][rotation][!left && mirrored() ? 1 : 0];
+            return shape(rotation, left, true);
+        }
+
+        Shape shape(int rotation, boolean left, boolean compact) {
+            return shape(rotation, left, compact, false);
+        }
+
+        Shape shape(int rotation, boolean left, boolean compact, boolean diagonalLow) {
+            var shapes = diagonalLow && gradedCurve() ? DIAGONAL_LOW_CURVES
+                : !compact && compactGeometry(rotation) ? LEGACY_LAYOUTS : SHAPES;
+            return shapes[ordinal()][rotation][!left && mirrored() ? 1 : 0];
         }
     }
 
@@ -130,14 +168,23 @@ final class TrackGeometry {
             return new Path(section);
         }
 
-        double project(Vec3 position) {
+        double project(Vec3 position) { return project(position, false); }
+
+        double projectHorizontally(Vec3 position) { return project(position, true); }
+
+        private double project(Vec3 position, boolean horizontal) {
             double nearest = Double.POSITIVE_INFINITY;
             double offset = 0;
             for (int i = 1; i < points.size(); i++) {
                 Vec3 start = points.get(i - 1);
                 Vec3 segment = points.get(i).subtract(start);
-                double t = Math.clamp(position.subtract(start).dot(segment) / segment.lengthSqr(), 0, 1);
-                double error = start.add(segment.scale(t)).distanceToSqr(position);
+                Vec3 difference = position.subtract(start);
+                if (horizontal) {
+                    segment = segment.multiply(1, 0, 1);
+                    difference = difference.multiply(1, 0, 1);
+                }
+                double t = Math.clamp(difference.dot(segment) / segment.lengthSqr(), 0, 1);
+                double error = segment.scale(t).distanceToSqr(difference);
                 if (error < nearest) {
                     nearest = error;
                     offset = distances[i - 1] + t * (distances[i] - distances[i - 1]);
@@ -153,19 +200,32 @@ final class TrackGeometry {
     }
 
     private static final Shape[][][] SHAPES = new Shape[Kind.values().length][16][2];
+    private static final Shape[][][] DIAGONAL_LOW_CURVES = new Shape[Kind.values().length][16][2];
+    private static final Shape[][][] LEGACY_LAYOUTS = new Shape[Kind.values().length][16][2];
 
     static {
         for (Kind kind : Kind.values()) {
-            for (int rotation : kind.rotations()) {
-                boolean diagonal = kind.flexibleStraight() && rotation % 4 == 2;
-                int quarter = kind == Kind.DIAGONAL || diagonal ? ((rotation + 2) & 15) / 4 : rotation / 4;
-                List<Path> paths = diagonal ? List.of(diagonal(straightBlocks(kind))) : canonical(kind);
-                for (int mirror = 0; mirror < 2; mirror++) {
-                    Shape shape = orient(kind, paths, quarter, mirror == 1);
-                    int aliases = kind.flexibleStraight() ? 2 : 4;
-                    for (int state = 0; state < aliases; state++) {
-                        SHAPES[kind.ordinal()][(rotation + state) & 15][mirror] = shape;
-                    }
+            buildShapes(kind, true, false, SHAPES);
+            if (kind.crossing() || kind.parallelTurnout()) buildShapes(kind, false, false, LEGACY_LAYOUTS);
+            if (kind.gradedCurve()) buildShapes(kind, true, true, DIAGONAL_LOW_CURVES);
+        }
+    }
+
+    private static void buildShapes(Kind kind, boolean compact, boolean diagonalLow, Shape[][][] shapes) {
+        for (int rotation : kind.rotations()) {
+            boolean diagonal = kind.flexibleStraight() && rotation % 4 == 2;
+            int quarter = kind == Kind.DIAGONAL || diagonal ? ((rotation + 2) & 15) / 4 : rotation / 4;
+            List<Path> paths = diagonal ? List.of(diagonal(straightBlocks(kind))) : canonical(kind, compact);
+            if (diagonalLow) paths = List.of(risingFromDiagonal(kind));
+            if (compact && kind.parallelTurnout() && (rotation & 2) != 0) {
+                paths = List.of(paths.getFirst(), curve(kind.parallelRun(), 2, false));
+            }
+            for (int mirror = 0; mirror < 2; mirror++) {
+                Shape shape = kind.turnout() && (rotation & 2) != 0
+                    ? diagonalTurnout(kind, paths, quarter, mirror == 1) : orient(kind, paths, quarter, mirror == 1);
+                int aliases = kind.diagonalOrientation() ? 2 : 4;
+                for (int state = 0; state < aliases; state++) {
+                    shapes[kind.ordinal()][(rotation + state) & 15][mirror] = shape;
                 }
             }
         }
@@ -177,7 +237,8 @@ final class TrackGeometry {
         return new Vec3(pos.getX() + 0.5, pos.getY() + RAIL_HEIGHT, pos.getZ() + 0.5);
     }
 
-    private static List<Path> canonical(Kind kind) {
+    private static List<Path> canonical(Kind kind, boolean compact) {
+        double approach = compact ? 1.5 : 2.5;
         return switch (kind) {
             case STRAIGHT, STRAIGHT_3, STRAIGHT_6, STRAIGHT_8, STRAIGHT_12, BRIDGE_STRAIGHT ->
                 List.of(straight(straightBlocks(kind) - 1));
@@ -185,15 +246,19 @@ final class TrackGeometry {
             case CURVE_SMALL -> List.of(curve(4, 2, true));
             case CURVE_MEDIUM -> List.of(curve(8, 3, true));
             case CURVE_LARGE -> List.of(curve(12, 5, true));
+            case CURVE_MEDIUM_GRADE -> List.of(risingCurve(8, 3));
+            case CURVE_LARGE_GRADE -> List.of(risingCurve(12, 5));
             case GRADE_6 -> List.of(grade(6));
             case GRADE_8 -> List.of(grade(8));
             case TURNOUT_45 -> List.of(straight(4), curve(4, 2, true));
-            case TURNOUT_PARALLEL -> List.of(straight(8), curve(8, 3, false));
+            case TURNOUT_PARALLEL, TURNOUT_PARALLEL_LONG ->
+                List.of(straight(kind.parallelRun()), curve(kind.parallelRun(), 3, false));
             case WYE -> List.of(curve(4, 2, true), curve(4, -2, true));
             case WYE_MEDIUM -> List.of(curve(8, 3, true), curve(8, -3, true));
-            case TURNOUT_PARALLEL_LONG -> List.of(straight(14), curve(14, 3, false));
-            case CROSSOVER_90 -> List.of(line(p(0, 0, -2.5), p(0, 0, 2.5)), line(p(-2.5, 0, 0), p(2.5, 0, 0)));
-            case CROSSOVER_45 -> List.of(line(p(0, 0, -2.5), p(0, 0, 2.5)), line(p(-2.5, 0, -2.5), p(2.5, 0, 2.5)));
+            case CROSSOVER_90 -> List.of(line(p(0, 0, -approach), p(0, 0, approach)),
+                line(p(-approach, 0, 0), p(approach, 0, 0)));
+            case CROSSOVER_45 -> List.of(line(p(0, 0, -approach), p(0, 0, approach)),
+                line(p(-approach, 0, -approach), p(approach, 0, approach)));
             case SCISSORS -> List.of(straight(12), offset(straight(12), 3), scissorsRoute(false), scissorsRoute(true));
         };
     }
@@ -255,6 +320,48 @@ final class TrackGeometry {
         return new Path(points);
     }
 
+    private static Path risingCurve(int run, int offset) {
+        Path flat = curve(run, offset, true);
+        double ramp = flat.length - 0.5 - Math.sqrt(0.5);
+        return new Path(flat.points().stream().map(point -> point.with(net.minecraft.core.Direction.Axis.Y,
+            Math.clamp((flat.project(point) - 0.5) / ramp, 0, 1))).toList());
+    }
+
+    private static Path risingFromDiagonal(Kind kind) {
+        int run = kind.gradeRun();
+        int offset = kind == Kind.CURVE_MEDIUM_GRADE ? 3 : 5;
+        Path fromCardinal = risingCurve(run, offset);
+        List<Vec3> points = new ArrayList<>();
+        for (Vec3 point : fromCardinal.points().reversed()) {
+            points.add(new Vec3(point.x - offset, 1 - point.y, point.z - run));
+        }
+        return new Path(points);
+    }
+
+    private static Shape diagonalTurnout(Kind kind, List<Path> paths, int quarter, boolean mirror) {
+        var diagonal = paths.stream().map(path -> {
+            List<Vec3> points = new ArrayList<>();
+            for (Vec3 point : path.points()) {
+                double x = mirror ? -point.x : point.x;
+                points.add(transform(new Vec3(x - point.z, point.y, x + point.z), quarter, false));
+            }
+            // A diagonal leg becomes cardinal after the turn. End it at the nearest block face.
+            alignCardinalPort(points, 0, 1);
+            alignCardinalPort(points, points.size() - 1, points.size() - 2);
+            return new Path(points);
+        }).toList();
+        return orient(kind, diagonal, 0, false);
+    }
+
+    private static void alignCardinalPort(List<Vec3> points, int endpoint, int adjacent) {
+        Vec3 at = points.get(endpoint);
+        Vec3 segment = at.subtract(points.get(adjacent));
+        if (Math.abs(segment.x * segment.z) < 1e-7
+            && Math.abs(at.x - Math.rint(at.x)) < 1e-7 && Math.abs(at.z - Math.rint(at.z)) < 1e-7) {
+            points.set(endpoint, at.subtract(segment.normalize().scale(0.5)));
+        }
+    }
+
     private static Path line(Vec3 a, Vec3 b) {
         return new Path(List.of(a, b));
     }
@@ -263,12 +370,12 @@ final class TrackGeometry {
         LinkedHashSet<BlockPos> cells = new LinkedHashSet<>();
         cells.add(BlockPos.ZERO);
         for (Path path : canonical) {
+            int highRow = kind.grade() ? cell(path.point(path.length - 1e-5)).getZ() : -1;
             int steps = (int) Math.ceil(path.length * 80);
             for (int i = 1; i < steps; i++) {
                 BlockPos cell = cell(path.point(path.length * i / steps));
                 if (kind.grade()) {
-                    int run = kind == Kind.GRADE_6 ? 6 : 8;
-                    cell = new BlockPos(cell.getX(), cell.getZ() == run ? 1 : 0, cell.getZ());
+                    cell = new BlockPos(cell.getX(), cell.getZ() == highRow ? 1 : 0, cell.getZ());
                 }
                 cells.add(cell);
             }

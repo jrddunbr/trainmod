@@ -177,20 +177,62 @@ final class TrackWork {
 
     static boolean ballast(ServerLevel level, ServerPlayer driver, BlockPos below) {
         if (!level.isLoaded(below) || !level.mayInteract(driver, below)) return false;
-        BlockState trackState = level.getBlockState(below.above());
-        if (!RailNetwork.isRail(trackState) || trackState.getBlock() instanceof TrackBlock track && !track.kind.hasBallast()) {
-            return false;
-        }
         BlockState state = level.getBlockState(below);
-        RailNetwork.Rail rail = RailNetwork.railAt(level, below.above());
-        if (!state.is(Blocks.GRAVEL) || rail == null
-            || NeoForge.EVENT_BUS.post(new BreakBlockEvent(level, below, state, driver)).isCanceled()) {
+        boolean gap = state.isAir() && TrackBlock.supported(level, below);
+        if (!gap && !(state.is(Blocks.SAND) || state.is(Blocks.GRAVEL) || state.is(Blocks.STONE)
+            || state.is(Blocks.COBBLESTONE) || state.is(Blocks.DIRT))) return false;
+        RailNetwork.Rail rail = ballastedRail(level, below.above());
+        if (rail == null || !gap && NeoForge.EVENT_BUS.post(new BreakBlockEvent(level, below, state, driver)).isCanceled()) {
             return false;
         }
         Vec3 tangent = rail.path().tangent(rail.project(TrackGeometry.origin(below.above())));
         int heading = RailwayBlocks.Ballast.heading((float) Math.toDegrees(Math.atan2(-tangent.x, tangent.z)));
         BlockState ballast = Trainmod.BALLAST.get().defaultBlockState().setValue(TrackBlock.ROTATION, heading);
         return apply(level, driver, Map.of(below, ballast), level.getBlockState(below.below()));
+    }
+
+    private static RailNetwork.Rail ballastedRail(ServerLevel level, BlockPos pos) {
+        return level.getBlockState(pos).getBlock() instanceof TrackBlock track && track.kind.hasBallast()
+            ? RailNetwork.railAt(level, pos) : null;
+    }
+
+    static int cascadeBallast(ServerLevel level, ServerPlayer actor, BlockPos ballast, int limit) {
+        if (limit == 0 || !level.isLoaded(ballast) || !level.mayInteract(actor, ballast)) return 0;
+        BlockState material = level.getBlockState(ballast);
+        if (!material.is(Trainmod.BALLAST.get())) return 0;
+        BlockPos track = ballast.above();
+        RailNetwork.Rail rail = ballastedRail(level, track);
+        if (rail == null) return 0;
+        Vec3 tangent = rail.path().tangent(rail.project(TrackGeometry.origin(track))).multiply(1, 0, 1).normalize();
+        int dx = (int) Math.round(-tangent.z);
+        int dz = (int) Math.round(tangent.x);
+        int placed = 0;
+        // Build up from solid ground so every layer rests on the one below.
+        for (int depth = 4; depth >= 1 && placed < limit; depth--) {
+            BlockPos center = ballast.below(depth);
+            if (placeShoulder(level, actor, center, material)) placed++;
+            for (int step = 1; step <= depth && placed < limit; step++) {
+                for (int side : new int[]{-1, 1}) {
+                    if (placed == limit) break;
+                    int offset = step * side;
+                    if (dx != 0 && dz != 0) {
+                        BlockPos join = center.offset(dx * offset, 0, dz * (offset - side));
+                        if (placeShoulder(level, actor, join, material)) placed++;
+                    }
+                    if (placed < limit && placeShoulder(level, actor, center.offset(dx * offset, 0, dz * offset), material)) placed++;
+                }
+            }
+        }
+        return placed;
+    }
+
+    private static boolean placeShoulder(ServerLevel level, ServerPlayer actor, BlockPos pos, BlockState material) {
+        if (!level.isInsideBuildHeight(pos) || !level.isLoaded(pos) || !level.mayInteract(actor, pos)
+            || !level.getBlockState(pos).isAir() || RailNetwork.isRail(level.getBlockState(pos.above()))) return false;
+        BlockState ground = level.getBlockState(pos.below());
+        return ground.isFaceSturdy(level, pos.below(), net.minecraft.core.Direction.UP)
+            && level.isUnobstructed(material, pos, net.minecraft.world.phys.shapes.CollisionContext.empty())
+            && apply(level, actor, Map.of(pos, material), ground);
     }
 
     static boolean apply(ServerLevel level, ServerPlayer actor, Map<BlockPos, BlockState> changes, BlockState against) {
@@ -225,6 +267,7 @@ final class TrackWork {
                 Block.UPDATE_ALL, Block.UPDATE_LIMIT);
             if (state.getBlock() instanceof TrackBlock.Turnout turnout && turnout.panel(state) != null) {
                 level.scheduleTick(pos, state.getBlock(), 1);
+                RailwayBlocks.Stand.pointsChanged(level, pos);
             }
         }
         return true;

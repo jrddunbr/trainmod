@@ -17,6 +17,7 @@ final class VehicleModels {
     static final float DECK_HEIGHT = 7.02f / 16;
     record Box(int color, float x, float y, float z, float width, float height, float length) {}
     record Face(Box bounds, Direction direction) {}
+    record Wheel(float y, float z, float radius, List<Box> boxes) {}
 
     private record Rectangle(float u0, float v0, float u1, float v1) {
         void subtract(Rectangle cover, List<Rectangle> visible) {
@@ -118,14 +119,17 @@ final class VehicleModels {
 
     private static VehicleModels body(TrainVehicle.Kind kind) {
         VehicleModels model = new VehicleModels();
-        model.underframe(kind.freight());
+        model.underframe(kind.freight() || kind == TrainVehicle.Kind.BALLAST_CAR, kind != TrainVehicle.Kind.STEAM_LOCOMOTIVE);
         switch (kind) {
             case LOCOMOTIVE -> model.locomotive();
             case FLATCAR -> model.flatcar();
-            case GONDOLA -> model.gondola();
+            case GONDOLA -> model.gondola(PRR, RIB, PRR_LIGHT);
             case BOXCAR -> model.boxcar();
             case TUNNEL_BORE -> model.bore();
-            case BALLAST_CAR -> model.ballast();
+            case BALLAST_CAR -> model.gondola(0xd6ac38, 0xa27b26, 0xe5be4f);
+            case STEAM_LOCOMOTIVE -> model.steam();
+            case TENDER -> model.tender();
+            case ELECTRIC_SHUNTER -> model.shunter();
         }
         return model;
     }
@@ -181,12 +185,13 @@ final class VehicleModels {
         return model.boxes;
     }
 
-    private void underframe(boolean lowDeck) {
+    private void underframe(boolean lowDeck, boolean standardWheels) {
         box(STEEL, -14, 4, -18, 28, lowDeck ? 1.5f : 4, 36);
         box(STEEL, -COUPLER_HALF_WIDTH, COUPLER_BOTTOM, -20, 2 * COUPLER_HALF_WIDTH,
             COUPLER_HEIGHT, 20 - COUPLER_INNER_END);
         box(STEEL, -COUPLER_HALF_WIDTH, COUPLER_BOTTOM, COUPLER_INNER_END, 2 * COUPLER_HALF_WIDTH,
             COUPLER_HEIGHT, 20 - COUPLER_INNER_END);
+        if (!standardWheels) return;
         for (int z : new int[]{-12, 7}) {
             box(STEEL, -10, 2, z, 20, lowDeck ? 2 : 4, 5);
         }
@@ -197,51 +202,154 @@ final class VehicleModels {
     }
 
     private void locomotive() {
-        box(GOLD, -14, 7, -18, 28, 2, 36);
-        box(DARK_GREEN, -14, 9, -17, 28, 2, 34);
-        box(GREEN, -8, 11, 3, 16, 16, 14);
-        box(DARK_GREEN, -7, 27, 3, 14, 2, 13);
-        box(GREEN, -8, 11, -17, 16, 13, 7);
-        box(DARK_GREEN, -7, 24, -17, 14, 2, 7);
-        box(STEEL, -2, 29, 7, 4, 3, 4);
-        box(LETTERS, -2, 20, 17, 4, 3, 1);
-        box(LETTERS, -2, 19, -18, 4, 3, 1);
-        for (int x : new int[]{-13, 11}) {
-            for (int z : new int[]{-9, 1}) {
-                box(GREEN, x, 11, z, 2, 26, 2);
+        box(GOLD, -15, 7, -18, 30, 1.6f, 36);
+        box(DARK_GREEN, -14, 8.6f, -17.5f, 28, 1, 35);
+        box(GREEN, -10, 9.6f, 4, 20, 8.4f, 13);
+        box(DARK_GREEN, -9, 18, 4, 18, 0.7f, 12.5f);
+        box(GREEN, -10, 9.6f, -17, 20, 7.1f, 12);
+        box(DARK_GREEN, -9, 16.7f, -17, 18, 0.7f, 12);
+        box(STEEL, -2, 18.7f, 7, 4, 0.7f, 2);
+        box(STEEL, -4.7f, 9.6f, -3.5f, 9.4f, 1.6f, 5.2f);
+        box(STEEL, -4.7f, 11.2f, -3.5f, 9.4f, 1.4f, 1);
+        for (int side : new int[]{-1, 1}) {
+            float x = side < 0 ? -14 : 12.6f;
+            box(GREEN, x, 9.6f, -5.3f, 1.4f, 4, 9.3f);
+            for (int end : new int[]{-17, 16}) {
+                box(GOLD, x, 9.6f, end, 1, 4.4f, 1);
             }
-            box(DARK_GREEN, x, 11, -9, 2, 6, 12);
+            for (int z = 5; z < 15; z += 2) {
+                box(DARK_GREEN, side < 0 ? -10.35f : 10, 12, z, 0.35f, 4.4f, 0.55f);
+            }
         }
-        box(GREEN, -14, 37, -10, 28, 3, 14);
-        box(DARK_GREEN, -12, 40, -9, 24, 1, 12);
-        box(STEEL, -3, 11, -5, 6, 4, 6);
-        for (int z = 4; z < 15; z += 3) {
-            box(DARK_GREEN, -8.4f, 14, z, 0.5f, 9, 1);
-            box(DARK_GREEN, 7.9f, 14, z, 0.5f, 9, 1);
+        box(STEEL, -3, 14.1f, 16.9f, 6, 3.2f, 0.7f);
+        box(STEEL, -3, 13.5f, -17.6f, 6, 3, 0.7f);
+    }
+
+    static List<Box> headlight(TrainVehicle.Kind kind, int end, boolean lit) {
+        var model = new VehicleModels();
+        model.box(lit ? 0xffe7a0 : 0x817e60, -2.3f, end > 0 ? 14.5f : 13.9f,
+            end > 0 ? 17.6f : -17.75f, 4.6f, 2.25f, 0.15f);
+        return model.scaled(kind);
+    }
+
+    private void steam() {
+        int boiler = 0x313439;
+        int smokeBox = 0x41474a;
+        box(0x552c2b, -15, 7, -16, 30, 1.25f, 33);
+        box(boiler, -11.5f, 9, -10, 23, 8, 22.4f);
+        box(boiler, -9, 17, -10, 18, 3, 22.4f);
+        box(boiler, -6, 20, -10, 12, 0.6f, 22.4f);
+        box(smokeBox, -11.5f, 9, 12.4f, 23, 8, 2);
+        box(smokeBox, -9, 17, 12.4f, 18, 3, 2);
+        box(STEEL, -5.3f, 18.7f, 8.2f, 10.6f, 4, 3.4f);
+        box(WHEEL, -6.6f, 22, 7.8f, 13.2f, 0.8f, 4.2f);
+        box(boiler, -5, 20.4f, -2, 10, 1.85f, 4);
+        box(GOLD, -2.2f, 20.4f, -8, 4.4f, 1.35f, 1.4f);
+        box(LETTERS, -2.9f, 15.25f, 14.4f, 5.8f, 2.2f, 0.85f);
+        box(0x552c2b, -14, 8, -17, 28, 5, 8);
+        box(boiler, -15, 20.7f, -17.4f, 30, 1.25f, 9.1f);
+        for (int side : new int[]{-1, 1}) {
+            float x = side < 0 ? -14 : 11;
+            box(boiler, x, 13, -16.7f, 3, 7.7f, 1.2f);
+            box(boiler, x, 13, -10, 3, 7.7f, 1.3f);
+            box(boiler, x, 19.2f, -15.5f, 3, 1.5f, 5.6f);
+            box(smokeBox, x, 3, 6, 4, 4.5f, 4.8f);
         }
+        for (int i = 0; i < 5; i++) box(WHEEL, -13 + i * 5.4f, 3, 16, 4.4f, 4.25f, 2.3f);
+    }
+
+    static List<Wheel> steamWheels(TrainVehicle.Kind kind) {
+        List<Wheel> wheels = new ArrayList<>();
+        for (float z : new float[]{-13, -5, 1, 9, 14}) {
+            float radius = z == -5 || z == 1 ? (float) (16 * TrainVehicle.DRIVER_WHEEL_RADIUS) : 2;
+            var model = new VehicleModels();
+            for (int side : new int[]{-1, 1}) {
+                float x = side < 0 ? -12.6f : 8.4f;
+                model.box(WHEEL, x, -radius, -radius * 0.61f, 4.2f, 2 * radius, 1.22f * radius);
+                model.box(WHEEL, x, -radius * 0.61f, -radius, 4.2f, 1.22f * radius, 2 * radius);
+                float face = side < 0 ? x - 0.3f : x + 4.2f;
+                model.box(0x787674, face, -0.33f, -radius * 0.9f, 0.3f, 0.66f, 1.8f * radius);
+                model.box(0x787674, face, -radius * 0.9f, -0.33f, 0.3f, 1.8f * radius, 0.66f);
+            }
+            // Wheel diameters are in world units so they remain circular when the chassis length changes.
+            var boxes = model.boxes.stream().map(box -> new Box(box.color(), box.x() * kind.width / 2, box.y(),
+                box.z(), box.width() * kind.width / 2, box.height(), box.length())).toList();
+            wheels.add(new Wheel(radius, z * kind.length / 2.5f, radius, boxes));
+        }
+        return List.copyOf(wheels);
+    }
+
+    static List<Box> steamRods(TrainVehicle.Kind kind) {
+        var model = new VehicleModels();
+        float length = 6 * kind.length / 2.5f;
+        for (int side : new int[]{-1, 1}) {
+            float x = side * kind.width * 6.6f;
+            model.box(0xa9a7a1, x - 0.27f, -0.37f, -0.47f, 0.54f, 0.74f, length + 0.94f);
+        }
+        return model.boxes;
+    }
+
+    static List<Box> posedSteamGear(TrainVehicle.Kind kind) {
+        var boxes = new ArrayList<Box>();
+        for (var wheel : steamWheels(kind)) {
+            for (var box : wheel.boxes()) boxes.add(offset(box, wheel.y(), wheel.z()));
+        }
+        var driver = steamWheels(kind).get(1);
+        for (var box : steamRods(kind)) boxes.add(offset(box, driver.y(), driver.z() + 1.15f));
+        return boxes;
+    }
+
+    private static Box offset(Box box, float y, float z) {
+        return new Box(box.color(), box.x(), box.y() + y, box.z() + z, box.width(), box.height(), box.length());
+    }
+
+    private void tender() {
+        box(0x393738, -15.1f, 6.8f, -17.7f, 30.2f, 7.7f, 35.4f);
+        box(0x492e2d, -15.4f, 7, -16.9f, 30.8f, 3.25f, 33.8f);
+        box(0x252428, -13, 14.5f, 2, 26, 1.7f, 14.4f);
+        for (int z = 3; z < 15; z += 3) box(0x333237, -11 + (z % 2), 16.2f, z, 22, 0.45f, 2.1f);
+        box(STEEL, -5.6f, 14.5f, -8, 11.2f, 1.85f, 6);
+        box(0x552c2b, -5.6f, 16.35f, -8, 11.2f, 0.45f, 6);
+        box(WHEEL, 8, 14.5f, -14.4f, 4.5f, 0.85f, 4.5f);
+    }
+
+    private void shunter() {
+        box(GOLD, -15.5f, 7.7f, -17.7f, 31, 1.25f, 35.4f);
+        box(0x435f73, -12, 9, -17, 24, 6.4f, 10);
+        box(0x435f73, -12, 9, 5, 24, 7.5f, 12);
+        box(0x2c4450, -10, 16.4f, 7, 20, 1.1f, 9);
+        box(STEEL, -4, 9, -3, 8, 1.8f, 5);
+        box(WHEEL, -7, 17.5f, 7.5f, 14, 0.7f, 6);
+        box(STEEL, -6, 18.2f, 8.5f, 1.2f, 2.1f, 4);
+        box(STEEL, 4.8f, 18.2f, 8.5f, 1.2f, 2.1f, 4);
+        box(WHEEL, -6, 20.3f, 9.4f, 12, 0.5f, 1.15f);
     }
 
     private void flatcar() {
-        box(PRR, -15, 4.6f, -18, 30, 1.5f, 36);
+        flatDeck(PRR, RIB);
+    }
+
+    private void flatDeck(int paint, int ribs) {
+        box(paint, -15, 4.6f, -18, 30, 1.5f, 36);
         for (int z = -18; z < 18; z += 3) {
             box(z % 2 == 0 ? FLOOR : 0x815d42, -14, 6.1f, z, 28, 0.9f, 2.9f);
         }
         for (int z : new int[]{-14, -4, 5, 14}) {
-            box(RIB, -15.25f, 4.4f, z, 0.6f, 1.7f, 2);
-            box(RIB, 14.65f, 4.4f, z, 0.6f, 1.7f, 2);
+            box(ribs, -15.25f, 4.4f, z, 0.6f, 1.7f, 2);
+            box(ribs, 14.65f, 4.4f, z, 0.6f, 1.7f, 2);
         }
     }
 
-    private void gondola() {
-        flatcar();
-        box(PRR, -15, 6.2f, -17, 1.25f, 6.3f, 34);
-        box(PRR, 13.75f, 6.2f, -17, 1.25f, 6.3f, 34);
-        box(PRR, -15, 6.2f, -18, 30, 6.3f, 1);
-        box(PRR, -15, 6.2f, 17, 30, 6.3f, 1);
+    private void gondola(int paint, int ribs, int trim) {
+        flatDeck(paint, ribs);
+        box(paint, -15, 6.2f, -17, 1.25f, 6.3f, 34);
+        box(paint, 13.75f, 6.2f, -17, 1.25f, 6.3f, 34);
+        box(paint, -15, 6.2f, -18, 30, 6.3f, 1);
+        box(paint, -15, 6.2f, 17, 30, 6.3f, 1);
         for (int x : new int[]{-15, 14}) {
-            box(PRR_LIGHT, x, 12.5f, -18, 1, 0.5f, 36);
+            box(trim, x, 12.5f, -18, 1, 0.5f, 36);
             for (int z = -15; z <= 15; z += 5) {
-                box(RIB, x - 0.3f, 6.2f, z, 1.6f, 6.3f, 0.9f);
+                box(ribs, x - 0.3f, 6.2f, z, 1.6f, 6.3f, 0.9f);
             }
         }
     }
@@ -262,19 +370,6 @@ final class VehicleModels {
         }
         box(RIB, -15.5f, 17.5f, -18.5f, 31, 0.8f, 37);
         box(PRR_LIGHT, -10, 18.3f, -18, 20, 0.7f, 36);
-        lettering(-15.6f, -15.5f);
-        lettering(15.25f, -15.5f);
-    }
-
-    private void lettering(float x, float z) {
-        String[] pixels = {"110110110", "101101101", "110110110", "100101101", "100101101"};
-        for (int row = 0; row < pixels.length; row++) {
-            for (int column = 0; column < pixels[row].length(); column++) {
-                if (pixels[row].charAt(column) == '1') {
-                    box(LETTERS, x, 13.9f - row * 0.45f, z + column * 0.8f, 0.25f, 0.43f, 0.75f);
-                }
-            }
-        }
     }
 
     private void handbrake(float y) {
@@ -306,14 +401,6 @@ final class VehicleModels {
             box(WORK, x, 16, -15, 2, 5, 12);
             box(LETTERS, x, 26, 2, 2, 2, 3);
         }
-    }
-
-    private void ballast() {
-        box(WORK, -14, 8, -16, 28, 4, 32);
-        box(STEEL, -11, 12, -12, 22, 6, 24);
-        box(WORK, -14, 18, -14, 28, 8, 28);
-        box(WHEEL, -11, 26, -11, 22, 2, 22);
-        box(WORK, -12, 4, 15, 24, 6, 4);
     }
 
     private void box(int color, float x, float y, float z, float width, float height, float length) {

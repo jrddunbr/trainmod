@@ -1,7 +1,7 @@
 package org.ja4.trainmod;
 
-import java.util.HashSet;
-import java.util.Set;
+import java.util.ArrayList;
+import java.util.List;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
@@ -17,7 +17,6 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.phys.BlockHitResult;
-import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
@@ -88,6 +87,9 @@ final class RailwayBlocks {
         private static final VoxelShape OUTLINE = Shapes.or(Block.box(3, 0, 3, 13, 3, 13),
             Block.box(7, 3, 7, 9, 15, 9), Block.box(2, 11, 7, 14, 17, 9),
             Block.box(7, 11, 2, 9, 17, 14));
+        private static final List<BlockPos> EXTRA_REACH = List.of(new BlockPos(0, 0, -2), new BlockPos(0, 0, 2),
+            new BlockPos(-2, 0, 0), new BlockPos(2, 0, 0), new BlockPos(-1, 0, -1), new BlockPos(1, 0, -1),
+            new BlockPos(-1, 0, 1), new BlockPos(1, 0, 1));
 
         Stand(Properties properties) {
             super(properties);
@@ -104,6 +106,8 @@ final class RailwayBlocks {
         public SwitchStand newBlockEntity(BlockPos pos, BlockState state) { return new SwitchStand(pos, state); }
 
         record Connection(BlockPos position, TrackBlock.Turnout turnout, BlockState state, SwitchLayout.Panel panel) {
+            boolean diagonal() { return (state.getValue(TrackBlock.ROTATION) & 2) != 0; }
+
             Direction facing() {
                 Direction approach = Direction.from2DDataValue(state.getValue(TrackBlock.ROTATION) / 4);
                 return panel.first().reverse() ? approach.getOpposite() : approach;
@@ -121,7 +125,22 @@ final class RailwayBlocks {
                 Connection found = turnoutAt(level, pos.relative(direction));
                 if (found != null) return found;
             }
+            for (BlockPos offset : EXTRA_REACH) {
+                Connection found = turnoutAt(level, pos.offset(offset));
+                if (found != null && found.diagonal()) return found;
+            }
             return null;
+        }
+
+        static boolean hasRemotePower(ServerLevel level, BlockPos turnout) {
+            for (BlockPos offset : EXTRA_REACH) {
+                BlockPos pos = turnout.offset(offset);
+                BlockState stand = level.getBlockState(pos);
+                if (!(stand.getBlock() instanceof Stand) || !stand.getValue(BlockStateProperties.POWERED)) continue;
+                Connection track = connection(level, pos);
+                if (track != null && track.position.equals(turnout)) return true;
+            }
+            return false;
         }
 
         private static Connection turnoutAt(BlockGetter level, BlockPos railPos) {
@@ -159,6 +178,18 @@ final class RailwayBlocks {
         }
 
         @Override
+        protected void affectNeighborsAfterRemoval(BlockState state, ServerLevel level, BlockPos pos, boolean moved) {
+            if (state.getValue(BlockStateProperties.POWERED)) scheduleRemoteTurnouts(level, pos);
+        }
+
+        private static void scheduleRemoteTurnouts(ServerLevel level, BlockPos pos) {
+            for (BlockPos offset : EXTRA_REACH) {
+                Connection track = turnoutAt(level, pos.offset(offset));
+                if (track != null && track.diagonal()) level.scheduleTick(track.position, track.turnout, 1);
+            }
+        }
+
+        @Override
         protected void neighborChanged(BlockState state, Level level, BlockPos pos, Block neighbor,
                                        net.minecraft.world.level.redstone.Orientation orientation, boolean moved) {
             if (!level.isClientSide()) {
@@ -169,14 +200,27 @@ final class RailwayBlocks {
         @Override
         protected void tick(BlockState state, ServerLevel level, BlockPos pos, RandomSource random) {
             if (state.getValue(PENDING) && !throwSwitch(level, pos, state)) level.scheduleTick(pos, this, 2);
+            if (state.getValue(BlockStateProperties.POWERED)) scheduleRemoteTurnouts(level, pos);
             updateIndicator(level, pos, level.getBlockState(pos));
+        }
+
+        static void pointsChanged(ServerLevel level, BlockPos turnout) {
+            for (Direction direction : Direction.Plane.HORIZONTAL) scheduleStand(level, turnout.relative(direction));
+            for (BlockPos offset : EXTRA_REACH) scheduleStand(level, turnout.offset(offset));
+        }
+
+        private static void scheduleStand(ServerLevel level, BlockPos pos) {
+            if (level.getBlockState(pos).getBlock() instanceof Stand stand) level.scheduleTick(pos, stand, 1);
         }
 
         static void routeChanged(ServerLevel level, BlockPos turnout) {
             for (Direction direction : Direction.Plane.HORIZONTAL) {
                 BlockPos neighbor = turnout.relative(direction);
-                BlockState stand = level.getBlockState(neighbor);
-                if (stand.getBlock() instanceof Stand) updateIndicator(level, neighbor, stand);
+                updateIndicator(level, neighbor, level.getBlockState(neighbor));
+            }
+            for (BlockPos offset : EXTRA_REACH) {
+                BlockPos remote = turnout.offset(offset);
+                updateIndicator(level, remote, level.getBlockState(remote));
             }
         }
 
@@ -208,12 +252,17 @@ final class RailwayBlocks {
         }
 
         private static boolean throwSwitch(ServerLevel level, BlockPos pos, BlockState state) {
-            var turnouts = new java.util.ArrayList<Connection>();
+            var turnouts = new ArrayList<Connection>();
             for (Direction direction : Direction.Plane.HORIZONTAL) {
                 Connection track = turnoutAt(level, pos.relative(direction));
-                if (track == null) continue;
+                if (track != null) turnouts.add(track);
+            }
+            if (turnouts.isEmpty()) {
+                Connection track = connection(level, pos);
+                if (track != null) turnouts.add(track);
+            }
+            for (Connection track : turnouts) {
                 if (track.turnout.occupied(level, track.position, track.state, track.panel)) return false;
-                turnouts.add(track);
             }
 
             BlockState changed = state.cycle(BlockStateProperties.POWERED).setValue(PENDING, false);
@@ -240,7 +289,7 @@ final class RailwayBlocks {
         Signal(Properties properties) {
             super(properties);
             registerDefaultState(defaultBlockState().setValue(FACING, Direction.NORTH)
-                .setValue(BlockStateProperties.POWERED, true).setValue(BlockStateProperties.INVERTED, false));
+                .setValue(BlockStateProperties.POWERED, false).setValue(BlockStateProperties.INVERTED, false));
         }
 
         @Override
@@ -260,108 +309,5 @@ final class RailwayBlocks {
             return OUTLINE;
         }
 
-        @Override
-        protected void onPlace(BlockState state, Level level, BlockPos pos, BlockState old, boolean moved) {
-            if (!level.isClientSide()) {
-                level.scheduleTick(pos, this, 1);
-            }
-        }
-
-        @Override
-        protected InteractionResult useWithoutItem(BlockState state, Level level, BlockPos pos, Player player,
-                                                    BlockHitResult hit) {
-            if (!level.isClientSide()) {
-                BlockState changed = state.cycle(BlockStateProperties.INVERTED);
-                level.setBlock(pos, changed, UPDATE_ALL);
-                player.sendOverlayMessage(net.minecraft.network.chat.Component.translatable(
-                    changed.getValue(BlockStateProperties.INVERTED)
-                        ? "message.trainmod.signal_reverse" : "message.trainmod.signal_forward"));
-            }
-            return InteractionResult.SUCCESS;
-        }
-
-        @Override
-        protected void tick(BlockState state, ServerLevel level, BlockPos pos, RandomSource random) {
-            boolean occupied = requiresStop(level, pos, state);
-            if (occupied != state.getValue(BlockStateProperties.POWERED)) {
-                level.setBlock(pos, state.setValue(BlockStateProperties.POWERED, occupied), UPDATE_ALL);
-            }
-            level.scheduleTick(pos, this, 8);
-        }
-
-        @Override
-        protected boolean isSignalSource(BlockState state) { return true; }
-
-        @Override
-        protected int getSignal(BlockState state, BlockGetter level, BlockPos pos, Direction side) {
-            return state.getValue(BlockStateProperties.POWERED) && side != state.getValue(FACING).getOpposite() ? 15 : 0;
-        }
-
-        private static boolean requiresStop(ServerLevel level, BlockPos pos, BlockState state) {
-            BlockPos anchor = pos.relative(state.getValue(FACING));
-            RailNetwork.Rail rail = RailNetwork.railAt(level, anchor);
-            if (rail == null) {
-                return true;
-            }
-            int direction = state.getValue(BlockStateProperties.INVERTED) ? -1 : 1;
-            double start = rail.project(TrackGeometry.origin(anchor));
-            if (rail.point(start).distanceToSqr(TrackGeometry.origin(anchor)) > 0.8) {
-                return true;
-            }
-            Set<BlockPos> visited = new HashSet<>();
-            for (int hops = 0; hops < 128; hops++) {
-                if (!visited.add(rail.root())) {
-                    return false;
-                }
-                double boundary = nextSignal(level, rail, pos, start, direction);
-                double end = Double.isNaN(boundary) ? (direction > 0 ? rail.path().length : 0) : boundary;
-                if (RailNetwork.occupied(level, rail, start, end)) {
-                    return true;
-                }
-                if (!Double.isNaN(boundary)) {
-                    return false;
-                }
-                if (!rail.open(direction > 0)) return true;
-                RailNetwork.Position next = RailNetwork.next(level, rail, direction > 0);
-                if (next == null) {
-                    Vec3 endpoint = rail.end(direction > 0);
-                    Vec3 outward = rail.path().tangent(end).scale(direction * 0.2);
-                    BlockPos ahead = BlockPos.containing(endpoint.add(outward.x, 0.0001, outward.z));
-                    return !level.isLoaded(ahead) || (RailNetwork.isRail(level.getBlockState(ahead))
-                        && RailNetwork.railAt(level, ahead) == null);
-                }
-                rail = next.rail();
-                direction = next.forward();
-                start = next.distance();
-            }
-            return true;
-        }
-
-        private static double nextSignal(ServerLevel level, RailNetwork.Rail rail, BlockPos origin,
-                                         double start, int direction) {
-            double nearest = Double.POSITIVE_INFINITY;
-            double result = Double.NaN;
-            for (BlockPos cell : rail.cells()) {
-                double at = rail.project(TrackGeometry.origin(cell));
-                double ahead = (at - start) * direction;
-                if (ahead < -0.0001 || ahead >= nearest
-                    || rail.point(at).distanceToSqr(TrackGeometry.origin(cell)) > 0.8) {
-                    continue;
-                }
-                for (Direction side : Direction.Plane.HORIZONTAL) {
-                    BlockPos target = cell.relative(side);
-                    if (target.equals(origin) || !level.isLoaded(target)) {
-                        continue;
-                    }
-                    BlockState state = level.getBlockState(target);
-                    if (state.getBlock() instanceof Signal && state.getValue(FACING) == side.getOpposite()
-                        && state.getValue(BlockStateProperties.INVERTED) == (direction < 0)) {
-                        nearest = ahead;
-                        result = at;
-                    }
-                }
-            }
-            return result;
-        }
     }
 }

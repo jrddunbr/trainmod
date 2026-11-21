@@ -1,0 +1,26 @@
+{
+  "steam_whistle": {
+    "subtitle": "subtitles.trainmod.steam_whistle",
+    "sounds": [
+      "trainmod:steam_whistle"
+    ]
+  },
+  "rs3_horn": {
+    "subtitle": "subtitles.trainmod.rs3_horn",
+    "sounds": [
+      "trainmod:rs3_horn"
+    ]
+  },
+  "train_bell": {
+    "subtitle": "subtitles.trainmod.train_bell",
+    "sounds": [
+      "trainmod:train_bell"
+    ]
+  },
+  "steam_chuff": {
+    "subtitle": "subtitles.trainmod.steam_chuff",
+    "sounds": [
+      "trainmod:steam_chuff"
+    ]
+  }
+}
