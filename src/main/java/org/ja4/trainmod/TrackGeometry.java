@@ -21,7 +21,9 @@ final class TrackGeometry {
         CROSSOVER_90("90° Diamond Crossing"), CROSSOVER_45("45° Diamond Crossing"),
         TURNOUT_PARALLEL_LONG("Long Parallel Turnout"), SCISSORS("Scissors Crossover"),
         WYE_MEDIUM("Medium Wye Turnout"), BRIDGE_STRAIGHT("Straight Bridge Rail"),
-        CURVE_MEDIUM_GRADE("Rising Medium 45° Curve"), CURVE_LARGE_GRADE("Rising Large 45° Curve");
+        CURVE_MEDIUM_GRADE("Rising Medium 45° Curve"), CURVE_LARGE_GRADE("Rising Large 45° Curve"),
+        TURNOUT_45_MEDIUM("Medium 45° Turnout"), TURNOUT_45_LARGE("Large 45° Turnout"),
+        SCISSORS_LONG("Long Scissors Crossover"), UNBALLASTED_STRAIGHT("Unballasted Straight Rail");
 
         final String title;
 
@@ -45,10 +47,17 @@ final class TrackGeometry {
             return 64 / largest;
         }
 
-        boolean turnout() {
-            return this == TURNOUT_45 || this == TURNOUT_PARALLEL || this == TURNOUT_PARALLEL_LONG
-                || wye() || this == SCISSORS;
-        }
+        boolean turnout() { return angledTurnout() || parallelTurnout() || wye() || scissors(); }
+
+        boolean angledTurnout() { return this == TURNOUT_45 || this == TURNOUT_45_MEDIUM || this == TURNOUT_45_LARGE; }
+
+        boolean scissors() { return this == SCISSORS || this == SCISSORS_LONG; }
+
+        int scissorsRun() { return this == SCISSORS_LONG ? 16 : 12; }
+
+        boolean hasKit() { return this != DIAGONAL && this != UNBALLASTED_STRAIGHT; }
+
+        int segmentLimit() { return this == SCISSORS_LONG ? 64 : 48; }
 
         boolean parallelTurnout() { return this == TURNOUT_PARALLEL || this == TURNOUT_PARALLEL_LONG; }
 
@@ -81,10 +90,10 @@ final class TrackGeometry {
 
         boolean flexibleStraight() {
             return this == STRAIGHT || this == STRAIGHT_3 || this == STRAIGHT_6
-                || this == STRAIGHT_8 || this == STRAIGHT_12 || this == BRIDGE_STRAIGHT;
+                || this == STRAIGHT_8 || this == STRAIGHT_12 || this == BRIDGE_STRAIGHT || this == UNBALLASTED_STRAIGHT;
         }
 
-        boolean hasBallast() { return this != BRIDGE_STRAIGHT; }
+        boolean hasBallast() { return this != BRIDGE_STRAIGHT && this != UNBALLASTED_STRAIGHT; }
 
         boolean diagonalOrientation() { return flexibleStraight() || turnout(); }
 
@@ -99,8 +108,7 @@ final class TrackGeometry {
         }
 
         boolean handed() {
-            return bankedCurve() || this == TURNOUT_45 || this == TURNOUT_PARALLEL || this == TURNOUT_PARALLEL_LONG
-                || this == CROSSOVER_45 || this == SCISSORS;
+            return bankedCurve() || angledTurnout() || parallelTurnout() || this == CROSSOVER_45 || scissors();
         }
 
         int rotation(int quarter) {
@@ -240,7 +248,7 @@ final class TrackGeometry {
     private static List<Path> canonical(Kind kind, boolean compact) {
         double approach = compact ? 1.5 : 2.5;
         return switch (kind) {
-            case STRAIGHT, STRAIGHT_3, STRAIGHT_6, STRAIGHT_8, STRAIGHT_12, BRIDGE_STRAIGHT ->
+            case STRAIGHT, STRAIGHT_3, STRAIGHT_6, STRAIGHT_8, STRAIGHT_12, BRIDGE_STRAIGHT, UNBALLASTED_STRAIGHT ->
                 List.of(straight(straightBlocks(kind) - 1));
             case DIAGONAL -> List.of(diagonal(1));
             case CURVE_SMALL -> List.of(curve(4, 2, true));
@@ -251,6 +259,8 @@ final class TrackGeometry {
             case GRADE_6 -> List.of(grade(6));
             case GRADE_8 -> List.of(grade(8));
             case TURNOUT_45 -> List.of(straight(4), curve(4, 2, true));
+            case TURNOUT_45_MEDIUM -> List.of(straight(8), curve(8, 3, true));
+            case TURNOUT_45_LARGE -> List.of(straight(12), curve(12, 5, true));
             case TURNOUT_PARALLEL, TURNOUT_PARALLEL_LONG ->
                 List.of(straight(kind.parallelRun()), curve(kind.parallelRun(), 3, false));
             case WYE -> List.of(curve(4, 2, true), curve(4, -2, true));
@@ -259,7 +269,11 @@ final class TrackGeometry {
                 line(p(-approach, 0, 0), p(approach, 0, 0)));
             case CROSSOVER_45 -> List.of(line(p(0, 0, -approach), p(0, 0, approach)),
                 line(p(-approach, 0, -approach), p(approach, 0, approach)));
-            case SCISSORS -> List.of(straight(12), offset(straight(12), 3), scissorsRoute(false), scissorsRoute(true));
+            case SCISSORS, SCISSORS_LONG -> {
+                int run = kind.scissorsRun();
+                Path straight = straight(run);
+                yield List.of(straight, offset(straight, 3), scissorsRoute(run, false), scissorsRoute(run, true));
+            }
         };
     }
 
@@ -281,15 +295,14 @@ final class TrackGeometry {
         return new Path(path.points().stream().map(point -> point.add(x, 0, 0)).toList());
     }
 
-    private static Path scissorsRoute(boolean opposite) {
+    private static Path scissorsRoute(int run, boolean opposite) {
         List<Vec3> points = new ArrayList<>();
         points.add(p(0, 0, -0.5));
         for (int i = 0; i <= SAMPLES; i++) {
             double t = i / (double) SAMPLES;
-            // An eight-block eased crossing puts the two centerlines at about 31 degrees apart.
-            points.add(p(3 * t * t * (3 - 2 * t), 0, 2 + 8 * t));
+            points.add(p(3 * t * t * (3 - 2 * t), 0, 2 + (run - 4) * t));
         }
-        points.add(p(3, 0, 12.5));
+        points.add(p(3, 0, run + 0.5));
         return new Path(opposite ? points.stream().map(point -> p(3 - point.x, 0, point.z)).toList() : points);
     }
 

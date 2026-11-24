@@ -24,7 +24,7 @@ class TrackBlock extends Block {
         net.minecraft.world.level.block.state.properties.BooleanProperty.create("compact");
     static final net.minecraft.world.level.block.state.properties.BooleanProperty DIAGONAL_LOW =
         net.minecraft.world.level.block.state.properties.BooleanProperty.create("diagonal_low");
-    static final IntegerProperty INDEX = IntegerProperty.create("segment", 0, 47);
+    static final IntegerProperty INDEX = IntegerProperty.create("segment", 0, TrackGeometry.Kind.STRAIGHT.segmentLimit() - 1);
     static final IntegerProperty ROTATION = BlockStateProperties.ROTATION_16;
     static final EnumProperty<ChestType> HAND = EnumProperty.create("type", ChestType.class,
         ChestType.LEFT, ChestType.RIGHT);
@@ -34,7 +34,7 @@ class TrackBlock extends Block {
     TrackBlock(TrackGeometry.Kind kind, Properties properties) {
         super(properties);
         this.kind = kind;
-        registerDefaultState(defaultBlockState().setValue(INDEX, 0).setValue(HAND, ChestType.LEFT)
+        registerDefaultState(defaultBlockState().setValue(indexProperty(), 0).setValue(HAND, ChestType.LEFT)
             .setValue(ROTATION, kind == TrackGeometry.Kind.DIAGONAL ? 14 : 0));
     }
 
@@ -44,7 +44,7 @@ class TrackBlock extends Block {
 
     BlockState segment(int rotation, boolean left, int index, boolean diagonalLow) {
         return defaultBlockState().setValue(ROTATION, rotation)
-            .setValue(HAND, left ? ChestType.LEFT : ChestType.RIGHT).setValue(INDEX, index)
+            .setValue(HAND, left ? ChestType.LEFT : ChestType.RIGHT).setValue(indexProperty(), index)
             .trySetValue(COMPACT, true).trySetValue(DIAGONAL_LOW, diagonalLow);
     }
 
@@ -53,16 +53,20 @@ class TrackBlock extends Block {
             state.getOptionalValue(COMPACT).orElse(true), state.getOptionalValue(DIAGONAL_LOW).orElse(false));
     }
 
+    IntegerProperty indexProperty() { return INDEX; }
+
+    int index(BlockState state) { return state.getValue(indexProperty()); }
+
     @Override
     protected void createBlockStateDefinition(StateDefinition.Builder<Block, BlockState> builder) {
-        builder.add(INDEX, ROTATION, HAND);
+        builder.add(indexProperty(), ROTATION, HAND);
     }
 
     @Override
     protected VoxelShape getShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext context) {
         if (kind.grade()) {
             var shape = shape(state);
-            int index = state.getValue(INDEX);
+            int index = index(state);
             if (index < shape.cells().size()) {
                 var cell = shape.cells().get(index);
                 double height;
@@ -96,8 +100,12 @@ class TrackBlock extends Block {
     @Override
     protected net.minecraft.world.item.ItemStack getCloneItemStack(net.minecraft.world.level.LevelReader level,
             BlockPos pos, BlockState state, boolean includeData) {
-        return new net.minecraft.world.item.ItemStack(
-            Trainmod.TRACK_ITEMS.get(kind == TrackGeometry.Kind.DIAGONAL ? TrackGeometry.Kind.STRAIGHT : kind).get());
+        var kit = switch (kind) {
+            case DIAGONAL -> TrackGeometry.Kind.STRAIGHT;
+            case UNBALLASTED_STRAIGHT -> TrackGeometry.Kind.BRIDGE_STRAIGHT;
+            default -> kind;
+        };
+        return new net.minecraft.world.item.ItemStack(Trainmod.TRACK_ITEMS.get(kit).get());
     }
 
     @Override
@@ -105,7 +113,7 @@ class TrackBlock extends Block {
                                         net.minecraft.world.entity.player.Player player) {
         if (level instanceof ServerLevel server && player instanceof net.minecraft.server.level.ServerPlayer miner) {
             var cells = shape(state).cells();
-            int index = state.getValue(INDEX);
+            int index = index(state);
             if (index < cells.size() && cells.size() > 1) {
                 BlockPos root = pos.subtract(cells.get(index));
                 var remaining = new java.util.ArrayList<BlockPos>();
@@ -192,7 +200,7 @@ class TrackBlock extends Block {
 
         SwitchLayout.Panel panel(BlockState state) {
             var shape = shape(state);
-            int index = state.getValue(INDEX);
+            int index = index(state);
             return index < shape.cells().size() ? SwitchLayout.of(kind, shape).panelAt(shape.cells().get(index)) : null;
         }
 
@@ -250,6 +258,16 @@ class TrackBlock extends Block {
                 RailwayBlocks.Stand.routeChanged(level, pos);
             }
         }
+    }
+
+    static final class LongScissors extends Turnout {
+        private static final IntegerProperty LONG_INDEX = IntegerProperty.create("segment", 0,
+            TrackGeometry.Kind.SCISSORS_LONG.segmentLimit() - 1);
+
+        LongScissors(TrackGeometry.Kind kind, Properties properties) { super(kind, properties); }
+
+        @Override
+        IntegerProperty indexProperty() { return LONG_INDEX; }
     }
 
     static final class ParallelTurnout extends Turnout {

@@ -98,9 +98,8 @@ final class TrainVehicle extends VehicleEntity {
     private static final double COUPLING_NOTICE_RADIUS = 16;
 
     static final int RAIL_SUPPLY = 0;
-    static final int GRAVEL_SUPPLY = 1;
+    static final int TIE_SUPPLY = 1;
     static final int STONE_SUPPLY = 2;
-    static final int RAIL_BUFFER = 4;
 
     private static final net.minecraft.network.syncher.EntityDataAccessor<Float> BANK =
         net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
@@ -941,7 +940,7 @@ final class TrainVehicle extends VehicleEntity {
     void regulate(ServerLevel level, ServerPlayer driver, BlockPos under) {
         int available = cargo.getItems().stream().filter(TrainVehicle::ballastSupply).mapToInt(ItemStack::getCount).sum();
         if (available == 0) return;
-        int used = TrackWork.ballast(level, driver, under) ? 1 : 0;
+        int used = TrackWork.ballast(level, driver, under, available);
         used += TrackWork.cascadeBallast(level, driver, under, wideBallast, available - used);
         if (used == 0) return;
         for (int slot = 0; used > 0 && slot < cargo.getContainerSize(); slot++) {
@@ -1545,8 +1544,8 @@ final class TrainVehicle extends VehicleEntity {
                 @Override
                 public boolean mayPlace(ItemStack stack) {
                     return switch (index) {
-                        case RAIL_SUPPLY -> TrackWork.railSupplyUnits(stack) > 0;
-                        case GRAVEL_SUPPLY -> ballastSupply(stack);
+                        case RAIL_SUPPLY -> stack.is(Trainmod.RAIL.get());
+                        case TIE_SUPPLY -> stack.is(Trainmod.TIE_BUNDLE.get());
                         case STONE_SUPPLY -> stack.is(Items.COBBLESTONE);
                         default -> false;
                     };

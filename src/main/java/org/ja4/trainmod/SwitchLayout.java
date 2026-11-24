@@ -64,7 +64,7 @@ final class SwitchLayout {
 
     private SwitchLayout(TrackGeometry.Kind kind, TrackGeometry.Shape shape) {
         var routes = shape.routes();
-        if (kind == TrackGeometry.Kind.SCISSORS) {
+        if (kind.scissors()) {
             panels = List.of(panel(routes, 0, 2, false, 2.13), panel(routes, 1, 3, false, 2.13),
                 panel(routes, 0, 3, true, 2.13), panel(routes, 1, 2, true, 2.13));
             scissorRoutes = List.of(ScissorRoute.build(0, routes.get(0), panels.get(0), panels.get(2)),

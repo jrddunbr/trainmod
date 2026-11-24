@@ -43,10 +43,13 @@ One plank of any type yields one **bundle of four ties** in the stonecutter. In 
 | 90° diamond crossing | Two 3-block straights directly above and below a center tie bundle |
 | 45° diamond crossing | Two 3-block straights in opposite corners and a tie bundle in the center |
 | 45° turnout | One 3-block straight, one single-block straight, one small curve, and a redstone torch |
+| Medium 45° turnout | One 8-block straight, one medium curve, and a redstone torch |
+| Large 45° turnout | One 12-block straight, one large curve, and a redstone torch |
 | Parallel turnout | One 8-block straight, one medium curve, and a redstone torch |
 | Long parallel turnout | One 12-block straight, one 3-block straight, one large curve, and a redstone torch |
 | Small or medium wye | Two matching small or medium curves and a redstone torch |
 | Scissors crossover | Two 12-block straights, two medium curves, and four redstone torches |
+| Long scissors crossover | One scissors crossover, one 8-block straight, and two large curves |
 
 Only the single-block straights and diamond crossings require a shaped grid. Regular straight kits can be placed diagonally.
 
@@ -67,6 +70,8 @@ Put a switch stand beside the first rail block of a turnout. On diagonal turnout
 
 Right-click the steel signal cabin to open its door. It has a one-block footprint, corrugated steel siding, and a 30° gable roof. Crouch to enter. The handle and padlock are decorative. Legacy signals remain in existing worlds as inert blocks.
 
+The medium and large 45° turnouts use the footprints of the matching curves on their diverging routes. The long scissors crossover spans 17 blocks on a cardinal approach and keeps the standard crossover’s three-block track centers and four independent point sets.
+
 ## Bridges and catenary
 
 - Lay a steel girder deck in line with its pier. Place up to six clear sections from each pier. Start from both piers to close a longer span. Stack steel girders to extend the piers, or add one regular girder to the side of a main beam for a catenary pole.
@@ -77,10 +82,11 @@ Right-click the steel signal cabin to open its door. It has a one-block footprin
 
 ## Tunnel bore and ballast
 
-- Sneak-right-click the bore or right-click with a hopper to open its supplies. In Survival, the first three slots take vanilla rails or any length of regular straight kit, gravel or railway ballast, and cobblestone. The bore converts longer kits into single-block sections as needed. The take-only reserve slot holds the unused sections after saving and loading. Creative drivers can build with empty supply slots.
+- Sneak-right-click the bore or right-click with a hopper to open its supplies. Load extruded rails, tie bundles, and cobblestone into the first three slots. Each section uses two rails and one tie bundle. Cobblestone provides a foundation where needed. Creative drivers can build with empty supply slots. Supplies left in the slots from older versions can still be removed.
 - Right-click with a chest for the first 54 cargo slots, or sneak-right-click with a chest for the other 54. Place the 4.15-block-long bore on a level straight or diagonal facing the cut. The clicked rail goes beneath the rear truck. The front tires lower automatically when the front rail wheels reach the end of the rails, and retract when rail is available under them. The rear truck needs rail, and both front tires need solid ground within reach when deployed. Couple freight cars behind the bore. The bore keeps its own chunk, the chunk ahead, and the chunks occupied by the trailing consist loaded while parked.
-- Board, press **Space** to toggle work, and drive forward. The nose clears three-wide, four-high slices, and the bore feeds one section of track at a time beneath the middle of the machine. It lays the supplied gravel or ballast below the rail and cobblestone below that. Existing gravel and ballast serve as roadbed without using a supply item. The bore clears water and lava from the cut. Vanilla fluid can flow back in from outside the cut.
+- Board, press **Space** to toggle work, and drive forward. The nose clears three-wide, four-high slices, and the bore feeds one section of unballasted track at a time beneath the middle of the machine. The bare ties look like bridge track. The bore clears water and lava from the cut. Vanilla fluid can flow back in from outside the cut.
 - Excavated items fill the trailing freight cars in order, then the onboard cargo buffer. The bore pauses and displays the specific missing supply or obstruction, including its location for blocked cuts.
+- Run an active ballast regulator over unballasted track to fill the ties and turn it into regular one-block straight track. It uses one gravel or ballast item for the ties and one more for the block below when that block needs ballast. The regulator then shapes the shoulders in its selected width.
 - Ballast blocks have a full, flat top with one-block shoulders that slope at 45°. Track raises the crest and its shoulders reach the same toe. The bed follows the track centerline around curves, meets diagonals corner to corner, and tapers at the track end into bare ballast or under the first bridge rail. The taper at a bridge starts from the full raised profile when there is a ballast block under the approach track. The steel profiles have end faces at open track ends. Raised ballast blends into neighboring ballast up to three blocks away at the same elevation, including on turnouts. Walk up its gravel shoulders one shallow step at a time. Right-click the ballast regulator to load gravel or ballast and pick **Narrow** or **Wide**. Narrow starts with one block directly below the rail. Wide starts with three. Both widen by one block per side at each of the four lower layers, giving a 45° slope. Both modes spend one item per block, replace eligible sand, gravel, stone, cobblestone, or dirt, and fill supported gaps. Sneak-right-click the car to toggle regulation, then drive it as part of a consist.
 
 ## WorldEdit

@@ -67,7 +67,7 @@ final class RailNetwork {
         BlockState state = level.getBlockState(pos);
         if (state.getBlock() instanceof TrackBlock track) {
             var shape = track.shape(state);
-            int index = state.getValue(TrackBlock.INDEX);
+            int index = track.index(state);
             if (index >= shape.cells().size()) return List.of();
             BlockPos root = pos.subtract(shape.cells().get(index));
             if (!level.isLoaded(root)) return List.of();
@@ -81,7 +81,7 @@ final class RailNetwork {
                     return List.of();
                 }
             }
-            if (!physical && track.kind == TrackGeometry.Kind.SCISSORS) return scissors(level, root, shape, cells);
+            if (!physical && track.kind.scissors()) return scissors(level, root, SwitchLayout.of(track.kind, shape), cells);
             int[] routes = physical ? java.util.stream.IntStream.range(0, shape.routes().size()).toArray()
                 : track.kind.activeRoutes(track.kind.turnout() && rootState.getValue(BlockStateProperties.POWERED),
                     rootState.getValue(TrackBlock.HAND) == net.minecraft.world.level.block.state.properties.ChestType.LEFT);
@@ -105,8 +105,7 @@ final class RailNetwork {
         return List.of();
     }
 
-    private static List<Rail> scissors(Level level, BlockPos root, TrackGeometry.Shape shape, List<BlockPos> cells) {
-        var layout = SwitchLayout.of(TrackGeometry.Kind.SCISSORS, shape);
+    private static List<Rail> scissors(Level level, BlockPos root, SwitchLayout layout, List<BlockPos> cells) {
         List<Rail> rails = new ArrayList<>();
         int index = 0;
         for (var route : layout.scissorRoutes()) {
@@ -183,8 +182,7 @@ final class RailNetwork {
     }
 
     static boolean matches(BlockState expected, BlockState actual, int index) {
-        return actual.getBlock() == expected.getBlock()
-            && actual.getValue(TrackBlock.INDEX) == index
+        return actual.getBlock() == expected.getBlock() && ((TrackBlock) actual.getBlock()).index(actual) == index
             && actual.getValue(TrackBlock.ROTATION).equals(expected.getValue(TrackBlock.ROTATION))
             && actual.getValue(TrackBlock.HAND) == expected.getValue(TrackBlock.HAND)
             && (!expected.hasProperty(TrackBlock.COMPACT) || actual.getValue(TrackBlock.COMPACT) == expected.getValue(TrackBlock.COMPACT))

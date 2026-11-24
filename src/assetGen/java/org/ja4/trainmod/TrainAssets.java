@@ -57,8 +57,12 @@ public final class TrainAssets {
             if (kind.crossing() || kind.parallelTurnout()) trackModels(kind, id, false, false, parts);
             if (kind.gradedCurve()) trackModels(kind, id, true, true, parts);
             write("assets/trainmod/blockstates/" + id + ".json", Map.of("multipart", parts));
-            if (kind != TrackGeometry.Kind.DIAGONAL) trackItem(kind, id);
-            trackLoot(id, kind == TrackGeometry.Kind.DIAGONAL ? "straight_rail" : id);
+            if (kind.hasKit()) trackItem(kind, id);
+            trackLoot(id, switch (kind) {
+                case DIAGONAL -> "straight_rail";
+                case UNBALLASTED_STRAIGHT -> "bridge_straight_rail";
+                default -> id;
+            });
         }
     }
 
@@ -786,11 +790,14 @@ public final class TrainAssets {
         recipe("crossover_90_rail", 1, List.of(" S ", " T ", " S "), crossing);
         recipe("crossover_45_rail", 1, List.of("  S", " T ", "S  "), crossing);
         shapeless("turnout_45_rail", 1, straight3, straight, small, torch);
+        shapeless("turnout_45_medium_rail", 1, straight8, medium, torch);
+        shapeless("turnout_45_large_rail", 1, straight12, large, torch);
         shapeless("turnout_parallel_rail", 1, straight8, medium, torch);
         shapeless("turnout_parallel_long_rail", 1, straight12, straight3, large, torch);
         shapeless("wye_rail", 1, small, small, torch);
         shapeless("wye_medium_rail", 1, medium, medium, torch);
         shapeless("scissors_rail", 1, straight12, straight12, medium, medium, torch, torch, torch, torch);
+        shapeless("scissors_long_rail", 1, "trainmod:scissors_rail", straight8, large, large);
     }
 
     private void shapeless(String id, int count, String... ingredients) throws IOException {

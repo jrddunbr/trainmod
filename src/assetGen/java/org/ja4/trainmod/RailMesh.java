@@ -115,7 +115,7 @@ final class RailMesh {
     }
 
     private static double bedStart(TrackGeometry.Kind kind, TrackGeometry.Shape shape, int route) {
-        if (kind == TrackGeometry.Kind.SCISSORS) return route >= 2 ? 3.43 : 0;
+        if (kind.scissors()) return route >= 2 ? 3.43 : 0;
         if (!kind.turnout() || route == 0) return 0;
         var path = shape.routes().get(route);
         var stock = shape.routes().getFirst();
@@ -127,7 +127,7 @@ final class RailMesh {
     }
 
     private static double bedEnd(TrackGeometry.Kind kind, int route, TrackGeometry.Path path) {
-        return path.length - (kind == TrackGeometry.Kind.SCISSORS && route >= 2 ? 3.43 : 0);
+        return path.length - (kind.scissors() && route >= 2 ? 3.43 : 0);
     }
 
     private static Vec3 horizontal(Vec3 tangent) { return tangent.multiply(1, 0, 1).normalize(); }
@@ -289,7 +289,7 @@ final class RailMesh {
             TrackGeometry.Path path = shape.routes().get(route);
             double start = bedStart(kind, shape, route);
             double end = bedEnd(kind, route, path);
-            DoubleUnaryOperator lift = route == 0 || kind == TrackGeometry.Kind.SCISSORS && route == 1 ? SAME_HEIGHT : distance ->
+            DoubleUnaryOperator lift = route == 0 || kind.scissors() && route == 1 ? SAME_HEIGHT : distance ->
                 0.003 * Math.min(1, Math.min(distance - start, end - distance) * 2);
             DoubleBinaryOperator bank = bank(kind, path, banking);
             List<Double> cuts = roadbedCuts(path, start, end);

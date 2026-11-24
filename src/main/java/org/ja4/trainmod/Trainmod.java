@@ -142,11 +142,12 @@ public final class Trainmod {
         }
         for (TrackGeometry.Kind kind : TrackGeometry.Kind.values()) {
             TRACK.put(kind, BLOCKS.registerBlock(kind.id() + "_rail",
-                p -> kind.parallelTurnout() ? new TrackBlock.ParallelTurnout(kind, p)
+                p -> kind == TrackGeometry.Kind.SCISSORS_LONG ? new TrackBlock.LongScissors(kind, p)
+                    : kind.parallelTurnout() ? new TrackBlock.ParallelTurnout(kind, p)
                     : kind.turnout() ? new TrackBlock.Turnout(kind, p) : kind.crossing() ? new TrackBlock.Crossing(kind, p)
                     : kind.gradedCurve() ? new TrackBlock.RisingCurve(kind, p) : new TrackBlock(kind, p),
                 p -> p.strength(0.7f).noCollision().noOcclusion().pushReaction(net.minecraft.world.level.material.PushReaction.POPPED)));
-            if (kind != TrackGeometry.Kind.DIAGONAL) {
+            if (kind.hasKit()) {
                 TRACK_ITEMS.put(kind, ITEMS.registerItem(kind.id() + "_rail", p -> new TrackItem(p, kind),
                     p -> p.stacksTo(kind.stackLimit())));
             }

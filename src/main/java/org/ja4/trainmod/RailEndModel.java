@@ -40,7 +40,7 @@ final class RailEndModel extends DelegateBlockStateModel {
                              List<BlockStateModelPart> parts) {
         if (!(state.getBlock() instanceof TrackBlock block)) return;
         var shape = block.shape(state);
-        int index = state.getValue(TrackBlock.INDEX);
+        int index = block.index(state);
         if (index >= shape.cells().size()) return;
         BlockPos cell = shape.cells().get(index);
         BlockPos root = pos.subtract(cell);

@@ -32,14 +32,14 @@ final class BallastSurface {
 
     static boolean covered(BlockState state) {
         return state.getBlock() instanceof TrackBlock track && track.kind.hasBallast()
-            && state.getValue(TrackBlock.INDEX) < track.shape(state).cells().size();
+            && track.index(state) < track.shape(state).cells().size();
     }
 
     static void addRailEnds(BlockAndTintGetter level, BlockPos pos, BlockState state, Material.Baked gravel,
                             List<BlockStateModelPart> parts) {
         if (!(state.getBlock() instanceof TrackBlock track)) return;
         var shape = track.shape(state);
-        int index = state.getValue(TrackBlock.INDEX);
+        int index = track.index(state);
         if (index >= shape.cells().size()) return;
         BlockPos cell = shape.cells().get(index);
         BlockPos root = pos.subtract(cell);

@@ -16,6 +16,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.ChestType;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.common.NeoForge;
@@ -24,6 +25,8 @@ import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.level.block.BreakBlockEvent;
 
 final class TrackWork {
+    private static final int RAILS_PER_BLOCK = 2;
+
     private TrackWork() {}
 
     record Issue(String key, Object... details) {
@@ -87,17 +90,19 @@ final class TrackWork {
         int dx = (int) Math.round(heading.x), dz = (int) Math.round(heading.z);
         int rotation = RailwayBlocks.Ballast.heading((float) Math.toDegrees(Math.atan2(-heading.x, heading.z)));
         BlockState existingRoadbed = level.getBlockState(next.below());
-        ItemStack roadbedSupply = bore.supplies.getItem(TrainVehicle.GRAVEL_SUPPLY);
-        var ballast = Trainmod.BALLAST.get();
-        boolean needsRoadbed = lay && !existingRoadbed.is(Blocks.GRAVEL) && !existingRoadbed.is(ballast);
-        boolean needsStone = lay && !level.getBlockState(next.below(2)).is(Blocks.COBBLESTONE);
-        int railUnits = railSupplyUnits(bore.supplies.getItem(TrainVehicle.RAIL_SUPPLY));
-        boolean buffered = !bore.supplies.getItem(TrainVehicle.RAIL_BUFFER).isEmpty();
-        BlockState roadbed = roadbedSupply.is(ballast.asItem())
-            ? ballast.defaultBlockState().setValue(TrackBlock.ROTATION, rotation) : Blocks.GRAVEL.defaultBlockState();
+        boolean needsStone = lay && !(existingRoadbed.is(Trainmod.BALLAST.get())
+            || roadbedMaterial(existingRoadbed) && TrackBlock.supported(level, next));
+        boolean usesSupplies = !driver.getAbilities().instabuild;
+        if (lay && usesSupplies) {
+            ItemStack rails = bore.supplies.getItem(TrainVehicle.RAIL_SUPPLY);
+            if (!rails.is(Trainmod.RAIL.get()) || rails.getCount() < RAILS_PER_BLOCK) return new Issue("bore_need_rail");
+            if (!bore.supplies.getItem(TrainVehicle.TIE_SUPPLY).is(Trainmod.TIE_BUNDLE.get())) return new Issue("bore_need_ties");
+            if (needsStone && !bore.supplies.getItem(TrainVehicle.STONE_SUPPLY).is(Items.COBBLESTONE)) {
+                return new Issue("bore_need_stone");
+            }
+        }
         Map<BlockPos, BlockState> changes = new LinkedHashMap<>();
-        if (needsStone) changes.put(next.below(2), Blocks.COBBLESTONE.defaultBlockState());
-        if (needsRoadbed) changes.put(next.below(), roadbed);
+        if (needsStone) changes.put(next.below(), Blocks.COBBLESTONE.defaultBlockState());
         for (int face = 0; face < faces; face++) {
             BlockPos center = next.offset(face * dx, 0, face * dz);
             if (face > 0 && RailNetwork.isRail(level.getBlockState(center))) break;
@@ -108,7 +113,7 @@ final class TrackWork {
                 }
             }
         }
-        if (lay) changes.put(next, Trainmod.TRACK.get(TrackGeometry.Kind.STRAIGHT).get().segment(rotation, true, 0));
+        if (lay) changes.put(next, Trainmod.TRACK.get(TrackGeometry.Kind.UNBALLASTED_STRAIGHT).get().segment(rotation, true, 0));
         List<ItemStack> drops = new ArrayList<>();
         for (var entry : changes.entrySet()) {
             BlockPos cell = entry.getKey();
@@ -131,14 +136,6 @@ final class TrackWork {
                 return at("bore_protected", cell);
             }
             drops.addAll(Block.getDrops(old, level, cell, null, driver, new ItemStack(Items.IRON_PICKAXE)));
-        }
-        boolean usesSupplies = !driver.getAbilities().instabuild;
-        if (usesSupplies) {
-            if (lay && !buffered && railUnits == 0) return new Issue("bore_need_rail");
-            if (needsRoadbed && !TrainVehicle.ballastSupply(roadbedSupply)) return new Issue("bore_need_gravel");
-            if (needsStone && !bore.supplies.getItem(TrainVehicle.STONE_SUPPLY).is(Items.COBBLESTONE)) {
-                return new Issue("bore_need_stone");
-            }
         }
         List<SimpleContainer> cargo = new ArrayList<>();
         trailing.forEach(car -> cargo.add(car.cargo));
@@ -169,17 +166,8 @@ final class TrackWork {
             copyInventory(stagedCargo.get(i), cargo.get(i));
         }
         if (lay && usesSupplies) {
-            if (buffered) bore.supplies.removeItem(TrainVehicle.RAIL_BUFFER, 1);
-            else {
-                bore.supplies.removeItem(TrainVehicle.RAIL_SUPPLY, 1);
-                if (railUnits > 1) {
-                    bore.supplies.setItem(TrainVehicle.RAIL_BUFFER,
-                        new ItemStack(Trainmod.TRACK_ITEMS.get(TrackGeometry.Kind.STRAIGHT).get(), railUnits - 1));
-                }
-            }
-        }
-        if (needsRoadbed && usesSupplies) {
-            bore.supplies.removeItem(TrainVehicle.GRAVEL_SUPPLY, 1);
+            bore.supplies.removeItem(TrainVehicle.RAIL_SUPPLY, RAILS_PER_BLOCK);
+            bore.supplies.removeItem(TrainVehicle.TIE_SUPPLY, 1);
         }
         if (needsStone && usesSupplies) {
             bore.supplies.removeItem(TrainVehicle.STONE_SUPPLY, 1);
@@ -208,21 +196,28 @@ final class TrackWork {
             center.offset(-2 * dx, 0, 0), center.offset(0, 0, -2 * dz));
     }
 
-    static int railSupplyUnits(ItemStack stack) {
-        if (stack.is(Items.RAIL)) return 1;
-        if (stack.getItem() instanceof TrackItem kit && kit.kind().flexibleStraight() && kit.kind().hasBallast()) {
-            return TrackGeometry.straightBlocks(kit.kind());
-        }
-        return 0;
-    }
-
-    static boolean ballast(ServerLevel level, ServerPlayer driver, BlockPos below) {
-        RailNetwork.Rail rail = ballastedRail(level, below.above());
-        if (rail == null) return false;
-        Vec3 tangent = rail.path().tangent(rail.project(TrackGeometry.origin(below.above())));
+    static int ballast(ServerLevel level, ServerPlayer driver, BlockPos below, int available) {
+        BlockPos above = below.above();
+        BlockState state = level.getBlockState(above);
+        if (available == 0 || !(state.getBlock() instanceof TrackBlock track)) return 0;
+        boolean unballasted = track.kind == TrackGeometry.Kind.UNBALLASTED_STRAIGHT;
+        if (!track.kind.hasBallast() && !unballasted) return 0;
+        RailNetwork.Rail rail = RailNetwork.railAt(level, above);
+        if (rail == null) return 0;
+        Vec3 tangent = rail.path().tangent(rail.project(TrackGeometry.origin(above)));
         int heading = RailwayBlocks.Ballast.heading((float) Math.toDegrees(Math.atan2(-tangent.x, tangent.z)));
         BlockState ballast = Trainmod.BALLAST.get().defaultBlockState().setValue(TrackBlock.ROTATION, heading);
-        return replaceRoadbed(level, driver, below, ballast);
+        if (!unballasted) return replaceRoadbed(level, driver, below, ballast) ? 1 : 0;
+
+        boolean needsRoadbed = !level.getBlockState(below).is(Trainmod.BALLAST.get());
+        int used = needsRoadbed ? 2 : 1;
+        if (available < used || !level.mayInteract(driver, above) || !level.mayInteract(driver, below)
+            || needsRoadbed && !canReplaceRoadbed(level, driver, below)) return 0;
+        var changes = new LinkedHashMap<BlockPos, BlockState>();
+        if (needsRoadbed) changes.put(below, ballast);
+        changes.put(above, Trainmod.TRACK.get(TrackGeometry.Kind.STRAIGHT).get().segment(
+            state.getValue(TrackBlock.ROTATION), state.getValue(TrackBlock.HAND) == ChestType.LEFT, 0));
+        return apply(level, driver, changes, level.getBlockState(below.below())) ? used : 0;
     }
 
     private static int widenCrest(ServerLevel level, ServerPlayer driver, BlockPos below, BlockState material,
@@ -237,16 +232,19 @@ final class TrackWork {
     }
 
     private static boolean replaceRoadbed(ServerLevel level, ServerPlayer driver, BlockPos pos, BlockState ballast) {
+        return canReplaceRoadbed(level, driver, pos) && apply(level, driver, Map.of(pos, ballast), level.getBlockState(pos.below()));
+    }
+
+    private static boolean canReplaceRoadbed(ServerLevel level, ServerPlayer driver, BlockPos pos) {
         if (!level.isLoaded(pos) || !level.mayInteract(driver, pos)) return false;
         BlockState state = level.getBlockState(pos);
-        if (state.isAir()) {
-            if (!TrackBlock.supported(level, pos)) return false;
-        } else if (!(state.is(Blocks.SAND) || state.is(Blocks.GRAVEL) || state.is(Blocks.STONE)
-            || state.is(Blocks.COBBLESTONE) || state.is(Blocks.DIRT))
-            || NeoForge.EVENT_BUS.post(new BreakBlockEvent(level, pos, state, driver)).isCanceled()) {
-            return false;
-        }
-        return apply(level, driver, Map.of(pos, ballast), level.getBlockState(pos.below()));
+        if (state.isAir()) return TrackBlock.supported(level, pos);
+        return roadbedMaterial(state) && !NeoForge.EVENT_BUS.post(new BreakBlockEvent(level, pos, state, driver)).isCanceled();
+    }
+
+    private static boolean roadbedMaterial(BlockState state) {
+        return state.is(Blocks.SAND) || state.is(Blocks.GRAVEL) || state.is(Blocks.STONE)
+            || state.is(Blocks.COBBLESTONE) || state.is(Blocks.DIRT);
     }
 
     private static RailNetwork.Rail ballastedRail(ServerLevel level, BlockPos pos) {

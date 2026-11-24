@@ -28,7 +28,11 @@ public final class TrackGeometryTest {
             int base = kind == TrackGeometry.Kind.DIAGONAL ? 14 : 0;
             var reference = kind.shape(base, true);
             expect(reference.cells().getFirst().equals(BlockPos.ZERO), kind + " has a root");
-            expect(reference.cells().size() <= 48, kind + " segment IDs fit the block state");
+            for (int rotation : kind.rotations()) {
+                for (boolean left : new boolean[]{false, true}) {
+                    expect(kind.shape(rotation, left).cells().size() <= kind.segmentLimit(), kind + " segment IDs fit the block state");
+                }
+            }
             for (int quarter = 0; quarter < 4; quarter++) {
                 for (boolean mirror : new boolean[]{false, true}) {
                     var shape = kind.shape((base + quarter * 4) % 16, !mirror);
@@ -38,7 +42,7 @@ public final class TrackGeometryTest {
                             quarter, flipped);
                         expect(BlockPos.containing(expected).equals(shape.cells().get(i)), kind + " cell transform");
                     }
-                    int routes = kind == TrackGeometry.Kind.SCISSORS ? 4 : kind.turnout() || kind.crossing() ? 2 : 1;
+                    int routes = kind.scissors() ? 4 : kind.turnout() || kind.crossing() ? 2 : 1;
                     expect(shape.routes().size() == routes, kind + " route count");
                     for (int route = 0; route < shape.routes().size(); route++) {
                         var path = shape.routes().get(route);
@@ -102,7 +106,7 @@ public final class TrackGeometryTest {
                 for (boolean left : new boolean[]{true, false}) {
                     var shape = kind.shape(rotation, left);
                     var layout = SwitchLayout.of(kind, shape);
-                    expect(layout.panels().size() == (kind == TrackGeometry.Kind.SCISSORS ? 4 : 1), "Correct panel count");
+                    expect(layout.panels().size() == (kind.scissors() ? 4 : 1), "Correct panel count");
                     for (var panel : layout.panels()) {
                         Vec3 firstThrow = panel.first().point(0, 1).subtract(panel.first().point(0, 0));
                         Vec3 secondThrow = panel.second().point(0, 0).subtract(panel.second().point(0, 1));

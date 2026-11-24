@@ -47,7 +47,7 @@ final class TrackEnds {
             var state = level.getBlockState(next);
             if (state.getBlock() instanceof TrackBlock track) {
                 var shape = track.shape(state);
-                int index = state.getValue(TrackBlock.INDEX);
+                int index = track.index(state);
                 if (index >= shape.cells().size()) continue;
                 BlockPos other = next.subtract(shape.cells().get(index));
                 if (other.equals(root)) continue;

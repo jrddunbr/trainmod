@@ -114,7 +114,7 @@ final class TrackItem extends Item {
             Vec3 center = TrackGeometry.origin(port.landing());
             boolean wantLeft = hand(player, context, approach, center, fixedHand);
             // A diagonal approach leads into the common points of a single turnout.
-            boolean pointsFirst = kind.turnout() && kind != TrackGeometry.Kind.SCISSORS
+            boolean pointsFirst = kind.turnout() && !kind.scissors()
                 && Math.abs(approach.x * approach.z) > 0.1;
             for (int rotation : kind.rotations()) {
                 for (boolean diagonalLow : kind.gradedCurve() ? new boolean[]{false, true} : new boolean[]{false}) {
