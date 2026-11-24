@@ -1,9 +1,11 @@
 package org.ja4.trainmod;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
@@ -23,9 +25,11 @@ import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.common.util.BlockSnapshot;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.level.block.BreakBlockEvent;
+import org.jspecify.annotations.Nullable;
 
 final class TrackWork {
     private static final int RAILS_PER_BLOCK = 2;
+    private static final int BALLAST_DEPTH = 4;
 
     private TrackWork() {}
 
@@ -196,12 +200,12 @@ final class TrackWork {
             center.offset(-2 * dx, 0, 0), center.offset(0, 0, -2 * dz));
     }
 
-    static int ballast(ServerLevel level, ServerPlayer driver, BlockPos below, int available) {
+    static int ballast(ServerLevel level, ServerPlayer driver, BlockPos below, int available, boolean trackOnly) {
         BlockPos above = below.above();
         BlockState state = level.getBlockState(above);
         if (available == 0 || !(state.getBlock() instanceof TrackBlock track)) return 0;
         boolean unballasted = track.kind == TrackGeometry.Kind.UNBALLASTED_STRAIGHT;
-        if (!track.kind.hasBallast() && !unballasted) return 0;
+        if (!unballasted && (trackOnly || !track.kind.hasBallast())) return 0;
         RailNetwork.Rail rail = RailNetwork.railAt(level, above);
         if (rail == null) return 0;
         Vec3 tangent = rail.path().tangent(rail.project(TrackGeometry.origin(above)));
@@ -209,24 +213,24 @@ final class TrackWork {
         BlockState ballast = Trainmod.BALLAST.get().defaultBlockState().setValue(TrackBlock.ROTATION, heading);
         if (!unballasted) return replaceRoadbed(level, driver, below, ballast) ? 1 : 0;
 
-        boolean needsRoadbed = !level.getBlockState(below).is(Trainmod.BALLAST.get());
+        boolean needsRoadbed = !trackOnly && !level.getBlockState(below).is(Trainmod.BALLAST.get());
         int used = needsRoadbed ? 2 : 1;
-        if (available < used || !level.mayInteract(driver, above) || !level.mayInteract(driver, below)
+        if (available < used || !level.mayInteract(driver, above)
             || needsRoadbed && !canReplaceRoadbed(level, driver, below)) return 0;
         var changes = new LinkedHashMap<BlockPos, BlockState>();
         if (needsRoadbed) changes.put(below, ballast);
         changes.put(above, Trainmod.TRACK.get(TrackGeometry.Kind.STRAIGHT).get().segment(
             state.getValue(TrackBlock.ROTATION), state.getValue(TrackBlock.HAND) == ChestType.LEFT, 0));
-        return apply(level, driver, changes, level.getBlockState(below.below())) ? used : 0;
+        BlockState support = level.getBlockState(needsRoadbed ? below.below() : below);
+        return apply(level, driver, changes, support) ? used : 0;
     }
 
     private static int widenCrest(ServerLevel level, ServerPlayer driver, BlockPos below, BlockState material,
-                                  int dx, int dz, int limit) {
+                                  int dx, int dz, Set<BlockPos> reached, int limit) {
         int used = 0;
         for (int sign : new int[]{-1, 1}) {
             BlockPos shoulder = below.offset(sign * dx, 0, sign * dz);
-            if (used < limit && !RailNetwork.isRail(level.getBlockState(shoulder.above()))
-                && replaceRoadbed(level, driver, shoulder, material)) used++;
+            if (used < limit && reached.contains(shoulder) && replaceRoadbed(level, driver, shoulder, material)) used++;
         }
         return used;
     }
@@ -263,29 +267,75 @@ final class TrackWork {
         int dx = (int) Math.round(-tangent.z);
         int dz = (int) Math.round(tangent.x);
         int crestWidth = wide ? 1 : 0;
-        int crest = wide ? widenCrest(level, actor, ballast, material, -dx, -dz, limit) : 0;
+        Set<BlockPos> reached = new HashSet<>();
+        reached.add(ballast);
+        var layers = new ArrayList<List<BlockPos>>();
+        for (int depth = 0; depth <= BALLAST_DEPTH; depth++) {
+            var layer = traceBallastLayer(level, actor, ballast.below(depth), dx, dz, depth, crestWidth, reached);
+            if (depth > 0) layers.add(layer);
+        }
+
+        int crest = wide ? widenCrest(level, actor, ballast, material, dx, dz, reached, limit) : 0;
         int placed = crest;
-        // Build up from solid ground so every layer rests on the one below.
-        for (int depth = 4; depth >= 1 && placed < limit; depth--) {
-            BlockPos center = ballast.below(depth);
-            if (placeShoulder(level, actor, center, material)) placed++;
-            for (int step = 1; step <= depth + crestWidth && placed < limit; step++) {
-                for (int side : new int[]{-1, 1}) {
-                    if (placed == limit) break;
-                    int offset = step * side;
-                    if (dx != 0 && dz != 0) {
-                        BlockPos join = center.offset(dx * offset, 0, dz * (offset - side));
-                        if (placeShoulder(level, actor, join, material)) placed++;
-                    }
-                    if (placed < limit && placeShoulder(level, actor, center.offset(dx * offset, 0, dz * offset), material)) placed++;
+        // Settle from the lowest reachable layer up so each block has something to rest on.
+        for (var layer : layers.reversed()) {
+            for (BlockPos pos : layer) {
+                if (placed == limit) return placed;
+                if (placeShoulder(level, actor, pos, material)) placed++;
+            }
+        }
+        if (wide && crest < 2 && placed > crest && placed < limit) {
+            placed += widenCrest(level, actor, ballast, material, dx, dz, reached, limit - placed);
+        }
+        return placed;
+    }
+
+    private static List<BlockPos> traceBallastLayer(ServerLevel level, ServerPlayer actor, BlockPos center, int dx, int dz,
+                                                     int depth, int crestWidth, Set<BlockPos> reached) {
+        var layer = new ArrayList<BlockPos>();
+        if (depth > 0 && reached.contains(center.above()) && ballastCanReach(level, actor, center, null)) {
+            reached.add(center);
+            layer.add(center);
+        }
+        boolean diagonal = dx != 0 && dz != 0;
+        int stepsPerBlock = diagonal ? 2 : 1;
+        int settleSteps = (depth + crestWidth) * stepsPerBlock;
+        // Gravel can spill over the edge before dropping, even when the ground below that edge is solid.
+        int reachSteps = settleSteps + (depth < BALLAST_DEPTH ? stepsPerBlock : 0);
+        // Material can come from above or spread outward through the neighboring cell on this layer.
+        for (int step = 1; step <= reachSteps; step++) {
+            for (int side : new int[]{-1, 1}) {
+                BlockPos pos = slopeCell(center, dx, dz, step * side, diagonal);
+                BlockPos inward = slopeCell(center, dx, dz, (step - 1) * side, diagonal);
+                BlockPos crestEdge = depth == 0 && step <= settleSteps
+                    ? slopeCell(center, dx, dz, (step + 1) * side, diagonal) : null;
+                if ((reached.contains(pos.above()) || reached.contains(inward))
+                    && ballastCanReach(level, actor, pos, crestEdge)) {
+                    reached.add(pos);
+                    if (step <= settleSteps) layer.add(pos);
                 }
             }
         }
-        // The lower layers can support crest blocks that were over a gap on the first pass.
-        if (wide && crest < 2 && placed > crest && placed < limit) {
-            placed += widenCrest(level, actor, ballast, material, -dx, -dz, limit - placed);
-        }
-        return placed;
+        return layer;
+    }
+
+    private static BlockPos slopeCell(BlockPos center, int dx, int dz, int step, boolean diagonal) {
+        if (!diagonal) return center.offset(step * dx, 0, step * dz);
+        // The intermediate cell gives a face-connected path and prevents jumping a blocked diagonal corner.
+        int x = (step + Integer.signum(step)) / 2;
+        return center.offset(x * dx, 0, (step / 2) * dz);
+    }
+
+    private static boolean ballastCanReach(ServerLevel level, ServerPlayer actor, BlockPos pos, @Nullable BlockPos crestEdge) {
+        if (!level.isInsideBuildHeight(pos) || !level.isLoaded(pos) || !level.mayInteract(actor, pos)) return false;
+        BlockState state = level.getBlockState(pos);
+        if (crestEdge == null) return state.isAir() || state.is(Trainmod.BALLAST.get());
+        BlockState overhead = level.getBlockState(pos.above());
+        if (RailNetwork.isRail(overhead)) return false;
+        if (state.isAir() || state.is(Trainmod.BALLAST.get())) return true;
+        // Dress exposed subgrade, while leaving a supported edge that drops away like a retaining wall intact.
+        return roadbedMaterial(state) && overhead.isAir() && level.isLoaded(crestEdge)
+            && (roadbedMaterial(level.getBlockState(crestEdge)) || !TrackBlock.supported(level, pos));
     }
 
     private static boolean placeShoulder(ServerLevel level, ServerPlayer actor, BlockPos pos, BlockState material) {

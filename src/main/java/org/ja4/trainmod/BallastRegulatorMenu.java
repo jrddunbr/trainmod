@@ -10,9 +10,9 @@ import net.minecraft.world.item.ItemStack;
 import org.jspecify.annotations.Nullable;
 
 final class BallastRegulatorMenu extends ChestMenu {
-    static final int TOGGLE_WIDTH = 0;
+    static final int CYCLE_MODE = 0;
     private final @Nullable TrainVehicle regulator;
-    private final DataSlot width;
+    private final DataSlot mode;
 
     BallastRegulatorMenu(int id, Inventory inventory) {
         this(id, inventory, new SimpleContainer(27), null);
@@ -21,21 +21,21 @@ final class BallastRegulatorMenu extends ChestMenu {
     BallastRegulatorMenu(int id, Inventory inventory, SimpleContainer cargo, @Nullable TrainVehicle regulator) {
         super(Trainmod.BALLAST_REGULATOR_MENU.get(), id, inventory, cargo, 3);
         this.regulator = regulator;
-        width = addDataSlot(regulator == null ? DataSlot.standalone() : new DataSlot() {
+        mode = addDataSlot(regulator == null ? DataSlot.standalone() : new DataSlot() {
             @Override
-            public int get() { return regulator.wideBallast() ? 1 : 0; }
+            public int get() { return regulator.ballastMode().ordinal(); }
 
             @Override
             public void set(int value) {}
         });
     }
 
-    boolean wide() { return width.get() != 0; }
+    TrainVehicle.BallastMode mode() { return TrainVehicle.BallastMode.byId(mode.get()); }
 
     @Override
     public boolean clickMenuButton(Player player, int button) {
-        if (button != TOGGLE_WIDTH || regulator == null || !stillValid(player)) return false;
-        regulator.toggleBallastWidth();
+        if (button != CYCLE_MODE || regulator == null || !stillValid(player)) return false;
+        regulator.cycleBallastMode();
         return true;
     }
 

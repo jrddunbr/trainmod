@@ -620,7 +620,8 @@ final class RailwayAdditionsGameTest {
         }
         driver.setPos(regulator.position());
         var menu = new BallastRegulatorMenu(1, driver.getInventory(), regulator.cargo, regulator);
-        test.assertTrue(!menu.wide() && menu.clickMenuButton(driver, BallastRegulatorMenu.TOGGLE_WIDTH) && menu.wide(),
+        test.assertTrue(menu.mode() == TrainVehicle.BallastMode.NARROW && menu.clickMenuButton(driver, BallastRegulatorMenu.CYCLE_MODE)
+            && menu.mode() == TrainVehicle.BallastMode.WIDE,
             "The cargo screen toggles the regulator from narrow to wide");
         regulator.cargo.setItem(0, new ItemStack(Items.GRAVEL, 3));
         regulator.regulate(level, driver, wide.below());
@@ -646,9 +647,74 @@ final class RailwayAdditionsGameTest {
         test.assertTrue(level.getBlockState(wideSlope.below(6)).is(Blocks.STONE), "The wide bed ends at the same depth as narrow");
         var restored = new TrainVehicle(Trainmod.VEHICLES.get(regulator.kind).get(), level, regulator.kind);
         restored.readAdditionalSaveData(vehicleData(level, regulator));
-        test.assertTrue(restored.wideBallast(), "The selected ballast width survives a reload");
+        test.assertTrue(restored.ballastMode() == TrainVehicle.BallastMode.WIDE, "The selected ballast width survives a reload");
+        test.assertTrue(menu.clickMenuButton(driver, BallastRegulatorMenu.CYCLE_MODE)
+            && menu.mode() == TrainVehicle.BallastMode.TRACK_ONLY, "Wide cycles to Track Only");
+        restored.readAdditionalSaveData(vehicleData(level, regulator));
+        test.assertTrue(restored.ballastMode() == TrainVehicle.BallastMode.TRACK_ONLY, "Track Only survives a reload");
+
+        BlockPos bare = wide.south(5);
+        RailwayGameTests.piece(level, bare, TrackGeometry.Kind.UNBALLASTED_STRAIGHT, 14, true);
+        level.setBlockAndUpdate(bare.below(), Blocks.COBBLESTONE.defaultBlockState());
+        regulator.cargo.setItem(0, new ItemStack(Items.GRAVEL));
+        regulator.regulate(level, driver, bare.below());
+        BlockState finished = level.getBlockState(bare);
+        test.assertTrue(regulator.cargo.isEmpty() && finished.is(Trainmod.TRACK.get(TrackGeometry.Kind.STRAIGHT).get())
+            && finished.getValue(TrackBlock.ROTATION) == 14 && level.getBlockState(bare.below()).is(Blocks.COBBLESTONE),
+            "Track Only finishes a bore-laid section using one gravel and leaves its foundation intact");
+
+        BlockPos ready = wide.south(9);
+        RailwayGameTests.straight(level, ready, 0);
+        level.setBlockAndUpdate(ready.below(), Trainmod.BALLAST.get().defaultBlockState());
+        level.setBlockAndUpdate(ready.below(3), Blocks.STONE.defaultBlockState());
+        regulator.cargo.setItem(0, new ItemStack(Items.GRAVEL));
+        regulator.regulate(level, driver, ready.below());
+        test.assertTrue(regulator.cargo.getItem(0).getCount() == 1 && level.getBlockState(ready.below(2)).isAir(),
+            "Track Only skips finished track and leaves supported spaces below it empty");
+        test.assertTrue(menu.clickMenuButton(driver, BallastRegulatorMenu.CYCLE_MODE)
+            && menu.mode() == TrainVehicle.BallastMode.NARROW, "Track Only cycles to Narrow");
         menu.removed(driver);
         regulator.discard();
+        test.succeed();
+    }
+
+    static void regulatorWalls(GameTestHelper test) {
+        var level = test.getLevel();
+        var driver = test.makeMockServerPlayerInLevel();
+        var ballast = Trainmod.BALLAST.get();
+        try {
+            for (boolean diagonal : new boolean[]{false, true}) {
+                int rotation = diagonal ? 14 : 0;
+                BlockPos rail = isolatedTrack(test, diagonal ? 207 : 198);
+                RailwayGameTests.straight(level, rail, rotation);
+                BlockPos crest = rail.below();
+                level.setBlockAndUpdate(crest, ballast.defaultBlockState().setValue(TrackBlock.ROTATION, rotation));
+                for (BlockPos floor : BlockPos.betweenClosed(crest.offset(-5, -5, -5), crest.offset(5, -5, 5))) {
+                    level.setBlockAndUpdate(floor, Blocks.STONE.defaultBlockState());
+                }
+                for (int depth = 0; depth <= 4; depth++) {
+                    level.setBlockAndUpdate(crest.west().below(depth), Blocks.STONE.defaultBlockState());
+                }
+                level.setBlockAndUpdate(crest.below(), Blocks.STONE.defaultBlockState());
+                BlockPos unsupported = crest.offset(4, -4, diagonal ? -4 : 0);
+                level.setBlockAndUpdate(unsupported.below(), Blocks.AIR.defaultBlockState());
+
+                for (boolean wide : new boolean[]{false, true}) {
+                    TrackWork.cascadeBallast(level, driver, crest, wide, 64);
+                    test.assertTrue(level.getBlockState(crest.west()).is(Blocks.STONE), "The regulator preserves the wall at the crest");
+                    for (int depth = 2; depth <= 4; depth++) {
+                        BlockPos behindWall = crest.offset(-2, -depth, diagonal ? 2 : 0);
+                        test.assertTrue(level.getBlockState(behindWall).isAir(),
+                            "The regulator leaves the far side empty at depth " + depth + ", diagonal=" + diagonal + ", wide=" + wide);
+                    }
+                    BlockPos besideCore = crest.offset(1, -1, diagonal ? -1 : 0);
+                    test.assertTrue(level.getBlockState(besideCore).is(ballast), "Gravel settles beside the solid core on the open side");
+                    test.assertTrue(level.getBlockState(unsupported).isAir(), "A reachable gap without a floor stays empty");
+                }
+            }
+        } finally {
+            level.getServer().getPlayerList().remove(driver);
+        }
         test.succeed();
     }
 

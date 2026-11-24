@@ -84,6 +84,16 @@ final class TrainVehicle extends VehicleEntity {
         boolean freight() { return this == FLATCAR || this == GONDOLA || this == BOXCAR; }
     }
 
+    enum BallastMode {
+        NARROW, WIDE, TRACK_ONLY;
+
+        private static final BallastMode[] MODES = values();
+
+        static BallastMode byId(int id) { return id >= 0 && id < MODES.length ? MODES[id] : NARROW; }
+
+        BallastMode next() { return MODES[(ordinal() + 1) % MODES.length]; }
+    }
+
     private record Member(TrainVehicle vehicle, int movement, int parent, int parentEnd) {}
     private record CouplingEnds(int own, int other) {}
     private record CouplerContact(TrainVehicle vehicle, int end) {}
@@ -190,7 +200,7 @@ final class TrainVehicle extends VehicleEntity {
     private boolean boardingTender;
     private int boardingKeyGrace;
     private boolean working;
-    private boolean wideBallast;
+    private BallastMode ballastMode = BallastMode.NARROW;
     private boolean previousJump;
     private long boardingOrder;
     private long lastAudioTick = Long.MIN_VALUE;
@@ -933,21 +943,23 @@ final class TrainVehicle extends VehicleEntity {
         return stack.is(Items.GRAVEL) || stack.is(Trainmod.BALLAST.get().asItem());
     }
 
-    boolean wideBallast() { return wideBallast; }
+    BallastMode ballastMode() { return ballastMode; }
 
-    void toggleBallastWidth() { wideBallast = !wideBallast; }
+    void cycleBallastMode() { ballastMode = ballastMode.next(); }
 
     void regulate(ServerLevel level, ServerPlayer driver, BlockPos under) {
         int available = cargo.getItems().stream().filter(TrainVehicle::ballastSupply).mapToInt(ItemStack::getCount).sum();
         if (available == 0) return;
-        int used = TrackWork.ballast(level, driver, under, available);
-        used += TrackWork.cascadeBallast(level, driver, under, wideBallast, available - used);
+        boolean trackOnly = ballastMode == BallastMode.TRACK_ONLY;
+        int used = TrackWork.ballast(level, driver, under, available, trackOnly);
+        if (!trackOnly) used += TrackWork.cascadeBallast(level, driver, under, ballastMode == BallastMode.WIDE, available - used);
         if (used == 0) return;
         for (int slot = 0; used > 0 && slot < cargo.getContainerSize(); slot++) {
             if (ballastSupply(cargo.getItem(slot))) used -= cargo.removeItem(slot, used).getCount();
         }
-        var sound = level.getBlockState(under).getSoundType(level, under, driver);
-        level.playSound(null, under, sound.getPlaceSound(), net.minecraft.sounds.SoundSource.BLOCKS,
+        var soundPos = trackOnly ? under.above() : under;
+        var sound = Trainmod.BALLAST.get().defaultBlockState().getSoundType(level, soundPos, driver);
+        level.playSound(null, soundPos, sound.getPlaceSound(), net.minecraft.sounds.SoundSource.BLOCKS,
             (sound.getVolume() + 1) / 2, sound.getPitch() * 0.8f);
     }
 
@@ -1429,7 +1441,10 @@ final class TrainVehicle extends VehicleEntity {
         links[0] = input.read("Front", UUIDUtil.CODEC).orElse(null);
         links[1] = input.read("Rear", UUIDUtil.CODEC).orElse(null);
         working = input.getBooleanOr("Working", false);
-        wideBallast = kind == Kind.BALLAST_CAR && input.getBooleanOr("WideBallast", false);
+        if (kind == Kind.BALLAST_CAR) {
+            int legacyMode = input.getBooleanOr("WideBallast", false) ? BallastMode.WIDE.ordinal() : BallastMode.NARROW.ordinal();
+            ballastMode = BallastMode.byId(input.getIntOr("BallastMode", legacyMode));
+        }
         fuel.load(input);
         entityData.set(HANDBRAKE, input.getBooleanOr("Handbrake", false));
         entityData.set(DOORS, input.getIntOr("Doors", 0) & 3);
@@ -1454,7 +1469,7 @@ final class TrainVehicle extends VehicleEntity {
             output.store("Rear", UUIDUtil.CODEC, links[1]);
         }
         output.putBoolean("Working", working);
-        if (kind == Kind.BALLAST_CAR) output.putBoolean("WideBallast", wideBallast);
+        if (kind == Kind.BALLAST_CAR) output.putInt("BallastMode", ballastMode.ordinal());
         fuel.save(output);
         output.putBoolean("Handbrake", handbrakeApplied());
         if (kind == Kind.BOXCAR) output.putInt("Doors", entityData.get(DOORS));

@@ -62,6 +62,7 @@ final class RailwayGameTests {
         new Case("electric_reserve", RailwayAdditionsGameTest::electricReserve),
         new Case("catenary_routes", RailwayAdditionsGameTest::catenaryRoutes),
         new Case("regulator_cargo", RailwayAdditionsGameTest::regulatorCargo),
+        new Case("regulator_walls", RailwayAdditionsGameTest::regulatorWalls),
         new Case("regulator_grade", RailwayAdditionsGameTest::regulatorGrade),
         new Case("bore_tickets", RailwayAdditionsGameTest::boreTickets),
         new Case("bridges_and_cabin", RailwayAdditionsGameTest::bridgesAndCabin),
@@ -329,7 +330,7 @@ final class RailwayGameTests {
                 "A train can follow the connection to the bridge rail");
             test.assertTrue(TrackEnds.connection(level, bridge.north(), port) == TrackEnds.Connection.BRIDGE,
                 "A bridge connection keeps the rail open at the joint and tapers the ballast onto the deck");
-            test.assertTrue(TrackWork.ballast(level, player, bridge.below(), 2) == 0,
+            test.assertTrue(TrackWork.ballast(level, player, bridge.below(), 2, false) == 0,
                 "The ballast car leaves bridge track unballasted");
         } finally {
             level.getServer().getPlayerList().remove(player);
@@ -1334,9 +1335,9 @@ final class RailwayGameTests {
         }
         test.assertTrue(freight.cargo.countItem(Items.COBBLESTONE) == 10 && bore.cargo.isEmpty(),
             "Excavation drops go to freight before the buffer");
-        test.assertTrue(TrackWork.ballast(level, driver, slice.below(), 1) == 0
+        test.assertTrue(TrackWork.ballast(level, driver, slice.below(), 1, false) == 0
             && level.getBlockState(slice.below()).is(Blocks.COBBLESTONE), "An undersupplied regulator leaves both layers alone");
-        test.assertTrue(TrackWork.ballast(level, driver, slice.below(), 2) == 2, "The regulator fills the ties and the roadbed");
+        test.assertTrue(TrackWork.ballast(level, driver, slice.below(), 2, false) == 2, "The regulator fills the ties and the roadbed");
         test.assertTrue(level.getBlockState(slice.below()).is(Trainmod.BALLAST.get())
             && RailNetwork.railAt(level, slice) != null, "Replacing ballast preserves usable track");
         bore.cargo.setItem(53, new ItemStack(Items.STONE, 6));

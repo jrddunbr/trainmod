@@ -8,7 +8,7 @@ import net.minecraft.world.inventory.ChestMenu;
 
 final class BallastRegulatorScreen extends ContainerScreen {
     private final BallastRegulatorMenu regulator;
-    private Button width;
+    private Button mode;
 
     BallastRegulatorScreen(ChestMenu menu, Inventory inventory, Component title) {
         super(menu, inventory, title);
@@ -18,18 +18,22 @@ final class BallastRegulatorScreen extends ContainerScreen {
     @Override
     protected void init() {
         super.init();
-        width = addRenderableWidget(Button.builder(widthLabel(), button ->
-            minecraft.gameMode.handleInventoryButtonClick(regulator.containerId, BallastRegulatorMenu.TOGGLE_WIDTH))
-            .bounds(leftPos + 92, topPos + 70, 76, 14).build());
+        mode = addRenderableWidget(Button.builder(modeLabel(), button ->
+            minecraft.gameMode.handleInventoryButtonClick(regulator.containerId, BallastRegulatorMenu.CYCLE_MODE))
+            .bounds(leftPos + 76, topPos + 70, 92, 14).build());
     }
 
     @Override
     protected void containerTick() {
         super.containerTick();
-        width.setMessage(widthLabel());
+        mode.setMessage(modeLabel());
     }
 
-    private Component widthLabel() {
-        return Component.translatable(regulator.wide() ? "menu.trainmod.ballast_wide" : "menu.trainmod.ballast_narrow");
+    private Component modeLabel() {
+        return Component.translatable(switch (regulator.mode()) {
+            case NARROW -> "menu.trainmod.ballast_narrow";
+            case WIDE -> "menu.trainmod.ballast_wide";
+            case TRACK_ONLY -> "menu.trainmod.ballast_track_only";
+        });
     }
 }
