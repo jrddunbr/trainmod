@@ -38,18 +38,19 @@ final class TrackWork {
     }
 
     static Issue extendIfNeeded(ServerLevel level, ServerPlayer driver, TrainVehicle bore,
-                                 RailNetwork.Position position, List<TrainVehicle> trailing) {
+                                 RailNetwork.Position position, double travel, List<TrainVehicle> trailing) {
         Vec3 start = position.point();
         Vec3 facing = position.tangent();
-        if (!level.getEntitiesOfClass(BufferStop.Mounted.class, AABB.ofSize(start, 5, 2, 5), stop -> {
+        boolean diagonal = Math.abs(facing.x * facing.z) > 0.1;
+        double nose = bore.kind.length / 2.0 + (diagonal ? 0.70 : 0.24);
+        if (!level.getEntitiesOfClass(BufferStop.Mounted.class, AABB.ofSize(start, 8, 3, 8), stop -> {
             Vec3 offset = stop.position().subtract(start);
             double ahead = offset.dot(facing);
-            return ahead >= 0 && ahead < 2.25 && offset.subtract(facing.scale(ahead)).lengthSqr() < 0.36;
+            return ahead >= 0 && ahead <= nose + travel && offset.subtract(facing.scale(ahead)).lengthSqr() < 0.36;
         }).isEmpty()) {
             return new Issue("buffer_reached");
         }
-        // Diagonal cuts meet block corners farther ahead of the drill than square cuts do.
-        double lookahead = bore.kind.length / 2.0 + (Math.abs(facing.x * facing.z) > 0.1 ? 1.10 : 0.5);
+        double remaining = nose + travel;
         RailNetwork.Rail rail;
         boolean end;
         while (true) {
@@ -57,15 +58,15 @@ final class TrackWork {
             end = position.forward() > 0;
             double distance = end ? rail.path().length - position.distance() : position.distance();
             Vec3 exit = rail.path().tangent(end ? rail.path().length : 0).scale(position.forward());
-            if (distance > lookahead) return null;
+            if (distance > remaining) return null;
+            remaining -= distance;
             RailNetwork.Position connected = RailNetwork.next(level, rail, end);
             if (connected == null) {
-                if (Math.abs(facing.y) > 0.001 || exit.dot(facing) < 0.999
-                    || Math.abs(rail.end(end).y - position.point().y) > 0.001) return new Issue("bore_heading");
+                if (!rail.open(end) || !rail.levelStraight() || exit.dot(facing) < 0.999
+                    || Math.abs(rail.end(end).y - start.y) > 0.001) return new Issue("bore_heading");
                 break;
             }
             if (connected.tangent().dot(facing) < 0.999) return null;
-            lookahead -= distance;
             position = connected;
         }
         BlockPos next = BlockPos.containing(rail.end(end).add(facing.scale(0.15)));
@@ -74,37 +75,50 @@ final class TrackWork {
         if (level.getBlockState(next).is(Trainmod.BUFFER_STOP.get())) {
             return new Issue("buffer_reached");
         }
-        return excavate(level, driver, bore, next, facing, trailing);
+        double spacing = diagonal ? Math.sqrt(2) : 1;
+        int faces = 1 + (int) Math.floor(remaining / spacing);
+        // Feed the rail at the middle of the machine, behind the cutting head.
+        boolean lay = TrackGeometry.origin(next).subtract(start).dot(facing) <= travel + 0.32;
+        return excavate(level, driver, bore, next, facing, faces, lay, trailing);
     }
 
     private static Issue excavate(ServerLevel level, ServerPlayer driver, TrainVehicle bore, BlockPos next,
-                                  Vec3 heading, List<TrainVehicle> trailing) {
+                                  Vec3 heading, int faces, boolean lay, List<TrainVehicle> trailing) {
         int dx = (int) Math.round(heading.x), dz = (int) Math.round(heading.z);
         int rotation = RailwayBlocks.Ballast.heading((float) Math.toDegrees(Math.atan2(-heading.x, heading.z)));
+        BlockState existingRoadbed = level.getBlockState(next.below());
+        ItemStack roadbedSupply = bore.supplies.getItem(TrainVehicle.GRAVEL_SUPPLY);
+        var ballast = Trainmod.BALLAST.get();
+        boolean needsRoadbed = lay && !existingRoadbed.is(Blocks.GRAVEL) && !existingRoadbed.is(ballast);
+        boolean needsStone = lay && !level.getBlockState(next.below(2)).is(Blocks.COBBLESTONE);
+        int railUnits = railSupplyUnits(bore.supplies.getItem(TrainVehicle.RAIL_SUPPLY));
+        boolean buffered = !bore.supplies.getItem(TrainVehicle.RAIL_BUFFER).isEmpty();
+        BlockState roadbed = roadbedSupply.is(ballast.asItem())
+            ? ballast.defaultBlockState().setValue(TrackBlock.ROTATION, rotation) : Blocks.GRAVEL.defaultBlockState();
         Map<BlockPos, BlockState> changes = new LinkedHashMap<>();
-        changes.put(next.below(2), Blocks.COBBLESTONE.defaultBlockState());
-        changes.put(next.below(), Blocks.GRAVEL.defaultBlockState());
-        for (BlockPos base : slice(next, dx, dz)) {
-            for (int height = 0; height < 4; height++) {
-                BlockPos cell = base.above(height);
-                AABB box = new AABB(cell);
-                var living = level.getEntitiesOfClass(LivingEntity.class, box, entity -> entity != driver);
-                if (!living.isEmpty()) return at("bore_entity", cell, living.getFirst().getDisplayName());
-                var cars = level.getEntitiesOfClass(TrainVehicle.class, box, car -> car != bore);
-                if (!cars.isEmpty()) return at("bore_entity", cell, cars.getFirst().getDisplayName());
-                var carts = level.getEntitiesOfClass(AbstractMinecart.class, box);
-                if (!carts.isEmpty()) return at("bore_entity", cell, carts.getFirst().getDisplayName());
-                if (!level.getEntitiesOfClass(BufferStop.Mounted.class, box).isEmpty()) return new Issue("buffer_reached");
-                changes.put(cell, Blocks.AIR.defaultBlockState());
+        if (needsStone) changes.put(next.below(2), Blocks.COBBLESTONE.defaultBlockState());
+        if (needsRoadbed) changes.put(next.below(), roadbed);
+        for (int face = 0; face < faces; face++) {
+            BlockPos center = next.offset(face * dx, 0, face * dz);
+            if (face > 0 && RailNetwork.isRail(level.getBlockState(center))) break;
+            for (BlockPos base : slice(center, dx, dz)) {
+                for (int height = 0; height < 4; height++) {
+                    BlockPos cell = base.above(height);
+                    changes.put(cell, Blocks.AIR.defaultBlockState());
+                }
             }
         }
-        changes.put(next, Trainmod.TRACK.get(TrackGeometry.Kind.STRAIGHT).get().segment(rotation, true, 0));
+        if (lay) changes.put(next, Trainmod.TRACK.get(TrackGeometry.Kind.STRAIGHT).get().segment(rotation, true, 0));
         List<ItemStack> drops = new ArrayList<>();
         for (var entry : changes.entrySet()) {
             BlockPos cell = entry.getKey();
             if (!level.isInWorldBounds(cell)) return at("bore_world_limit", cell);
             if (!level.isLoaded(cell)) return at("bore_unloaded", cell);
             if (!level.mayInteract(driver, cell)) return at("bore_protected", cell);
+            if (cell.getY() >= next.getY()) {
+                Issue obstruction = faceObstruction(level, driver, bore, cell);
+                if (obstruction != null) return obstruction;
+            }
             BlockState old = level.getBlockState(cell);
             if (old == entry.getValue() || old.isAir() || old.liquid()) {
                 continue;
@@ -118,11 +132,14 @@ final class TrackWork {
             }
             drops.addAll(Block.getDrops(old, level, cell, null, driver, new ItemStack(Items.IRON_PICKAXE)));
         }
-        boolean gravel = !level.getBlockState(next.below()).is(Blocks.GRAVEL);
-        boolean stone = !level.getBlockState(next.below(2)).is(Blocks.COBBLESTONE);
-        if (!railSupply(bore.supplies.getItem(TrainVehicle.RAIL_SUPPLY))) return new Issue("bore_need_rail");
-        if (gravel && !bore.supplies.getItem(TrainVehicle.GRAVEL_SUPPLY).is(Items.GRAVEL)) return new Issue("bore_need_gravel");
-        if (stone && !bore.supplies.getItem(TrainVehicle.STONE_SUPPLY).is(Items.COBBLESTONE)) return new Issue("bore_need_stone");
+        boolean usesSupplies = !driver.getAbilities().instabuild;
+        if (usesSupplies) {
+            if (lay && !buffered && railUnits == 0) return new Issue("bore_need_rail");
+            if (needsRoadbed && !TrainVehicle.ballastSupply(roadbedSupply)) return new Issue("bore_need_gravel");
+            if (needsStone && !bore.supplies.getItem(TrainVehicle.STONE_SUPPLY).is(Items.COBBLESTONE)) {
+                return new Issue("bore_need_stone");
+            }
+        }
         List<SimpleContainer> cargo = new ArrayList<>();
         trailing.forEach(car -> cargo.add(car.cargo));
         cargo.add(bore.cargo);
@@ -145,20 +162,40 @@ final class TrackWork {
                 return at("bore_full", next, drop.getHoverName());
             }
         }
-        if (!apply(level, driver, changes, level.getBlockState(next.below()))) {
+        if (!apply(level, driver, changes, existingRoadbed)) {
             return at("bore_place_denied", next);
         }
         for (int i = 0; i < cargo.size(); i++) {
             copyInventory(stagedCargo.get(i), cargo.get(i));
         }
-        bore.supplies.removeItem(TrainVehicle.RAIL_SUPPLY, 1);
-        if (gravel) {
+        if (lay && usesSupplies) {
+            if (buffered) bore.supplies.removeItem(TrainVehicle.RAIL_BUFFER, 1);
+            else {
+                bore.supplies.removeItem(TrainVehicle.RAIL_SUPPLY, 1);
+                if (railUnits > 1) {
+                    bore.supplies.setItem(TrainVehicle.RAIL_BUFFER,
+                        new ItemStack(Trainmod.TRACK_ITEMS.get(TrackGeometry.Kind.STRAIGHT).get(), railUnits - 1));
+                }
+            }
+        }
+        if (needsRoadbed && usesSupplies) {
             bore.supplies.removeItem(TrainVehicle.GRAVEL_SUPPLY, 1);
         }
-        if (stone) {
+        if (needsStone && usesSupplies) {
             bore.supplies.removeItem(TrainVehicle.STONE_SUPPLY, 1);
         }
         return null;
+    }
+
+    private static Issue faceObstruction(ServerLevel level, ServerPlayer driver, TrainVehicle bore, BlockPos cell) {
+        AABB box = new AABB(cell);
+        var living = level.getEntitiesOfClass(LivingEntity.class, box, entity -> entity != driver);
+        if (!living.isEmpty()) return at("bore_entity", cell, living.getFirst().getDisplayName());
+        var cars = level.getEntitiesOfClass(TrainVehicle.class, box, car -> car != bore);
+        if (!cars.isEmpty()) return at("bore_entity", cell, cars.getFirst().getDisplayName());
+        var carts = level.getEntitiesOfClass(AbstractMinecart.class, box);
+        if (!carts.isEmpty()) return at("bore_entity", cell, carts.getFirst().getDisplayName());
+        return level.getEntitiesOfClass(BufferStop.Mounted.class, box).isEmpty() ? null : new Issue("buffer_reached");
     }
 
     private static List<BlockPos> slice(BlockPos center, int dx, int dz) {
@@ -171,24 +208,45 @@ final class TrackWork {
             center.offset(-2 * dx, 0, 0), center.offset(0, 0, -2 * dz));
     }
 
-    static boolean railSupply(ItemStack stack) {
-        return stack.is(Items.RAIL) || stack.is(Trainmod.TRACK_ITEMS.get(TrackGeometry.Kind.STRAIGHT).get());
+    static int railSupplyUnits(ItemStack stack) {
+        if (stack.is(Items.RAIL)) return 1;
+        if (stack.getItem() instanceof TrackItem kit && kit.kind().flexibleStraight() && kit.kind().hasBallast()) {
+            return TrackGeometry.straightBlocks(kit.kind());
+        }
+        return 0;
     }
 
     static boolean ballast(ServerLevel level, ServerPlayer driver, BlockPos below) {
-        if (!level.isLoaded(below) || !level.mayInteract(driver, below)) return false;
-        BlockState state = level.getBlockState(below);
-        boolean gap = state.isAir() && TrackBlock.supported(level, below);
-        if (!gap && !(state.is(Blocks.SAND) || state.is(Blocks.GRAVEL) || state.is(Blocks.STONE)
-            || state.is(Blocks.COBBLESTONE) || state.is(Blocks.DIRT))) return false;
         RailNetwork.Rail rail = ballastedRail(level, below.above());
-        if (rail == null || !gap && NeoForge.EVENT_BUS.post(new BreakBlockEvent(level, below, state, driver)).isCanceled()) {
-            return false;
-        }
+        if (rail == null) return false;
         Vec3 tangent = rail.path().tangent(rail.project(TrackGeometry.origin(below.above())));
         int heading = RailwayBlocks.Ballast.heading((float) Math.toDegrees(Math.atan2(-tangent.x, tangent.z)));
         BlockState ballast = Trainmod.BALLAST.get().defaultBlockState().setValue(TrackBlock.ROTATION, heading);
-        return apply(level, driver, Map.of(below, ballast), level.getBlockState(below.below()));
+        return replaceRoadbed(level, driver, below, ballast);
+    }
+
+    private static int widenCrest(ServerLevel level, ServerPlayer driver, BlockPos below, BlockState material,
+                                  int dx, int dz, int limit) {
+        int used = 0;
+        for (int sign : new int[]{-1, 1}) {
+            BlockPos shoulder = below.offset(sign * dx, 0, sign * dz);
+            if (used < limit && !RailNetwork.isRail(level.getBlockState(shoulder.above()))
+                && replaceRoadbed(level, driver, shoulder, material)) used++;
+        }
+        return used;
+    }
+
+    private static boolean replaceRoadbed(ServerLevel level, ServerPlayer driver, BlockPos pos, BlockState ballast) {
+        if (!level.isLoaded(pos) || !level.mayInteract(driver, pos)) return false;
+        BlockState state = level.getBlockState(pos);
+        if (state.isAir()) {
+            if (!TrackBlock.supported(level, pos)) return false;
+        } else if (!(state.is(Blocks.SAND) || state.is(Blocks.GRAVEL) || state.is(Blocks.STONE)
+            || state.is(Blocks.COBBLESTONE) || state.is(Blocks.DIRT))
+            || NeoForge.EVENT_BUS.post(new BreakBlockEvent(level, pos, state, driver)).isCanceled()) {
+            return false;
+        }
+        return apply(level, driver, Map.of(pos, ballast), level.getBlockState(pos.below()));
     }
 
     private static RailNetwork.Rail ballastedRail(ServerLevel level, BlockPos pos) {
@@ -196,7 +254,7 @@ final class TrackWork {
             ? RailNetwork.railAt(level, pos) : null;
     }
 
-    static int cascadeBallast(ServerLevel level, ServerPlayer actor, BlockPos ballast, int limit) {
+    static int cascadeBallast(ServerLevel level, ServerPlayer actor, BlockPos ballast, boolean wide, int limit) {
         if (limit == 0 || !level.isLoaded(ballast) || !level.mayInteract(actor, ballast)) return 0;
         BlockState material = level.getBlockState(ballast);
         if (!material.is(Trainmod.BALLAST.get())) return 0;
@@ -206,12 +264,14 @@ final class TrackWork {
         Vec3 tangent = rail.path().tangent(rail.project(TrackGeometry.origin(track))).multiply(1, 0, 1).normalize();
         int dx = (int) Math.round(-tangent.z);
         int dz = (int) Math.round(tangent.x);
-        int placed = 0;
+        int crestWidth = wide ? 1 : 0;
+        int crest = wide ? widenCrest(level, actor, ballast, material, -dx, -dz, limit) : 0;
+        int placed = crest;
         // Build up from solid ground so every layer rests on the one below.
         for (int depth = 4; depth >= 1 && placed < limit; depth--) {
             BlockPos center = ballast.below(depth);
             if (placeShoulder(level, actor, center, material)) placed++;
-            for (int step = 1; step <= depth && placed < limit; step++) {
+            for (int step = 1; step <= depth + crestWidth && placed < limit; step++) {
                 for (int side : new int[]{-1, 1}) {
                     if (placed == limit) break;
                     int offset = step * side;
@@ -222,6 +282,10 @@ final class TrackWork {
                     if (placed < limit && placeShoulder(level, actor, center.offset(dx * offset, 0, dz * offset), material)) placed++;
                 }
             }
+        }
+        // The lower layers can support crest blocks that were over a gap on the first pass.
+        if (wide && crest < 2 && placed > crest && placed < limit) {
+            placed += widenCrest(level, actor, ballast, material, -dx, -dz, limit - placed);
         }
         return placed;
     }

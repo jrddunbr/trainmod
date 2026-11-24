@@ -10,7 +10,7 @@ import net.minecraft.world.phys.Vec3;
 final class SwitchLayout {
     private static final Map<TrackGeometry.Shape, SwitchLayout> CACHE = new ConcurrentHashMap<>();
     static final double GAUGE = CurveBanking.GAUGE / 2;
-    static final double POINT_CLEARANCE = 2.0;
+    static final double POINT_CLEARANCE = 1.0 / 16;
 
     record Blade(int route, TrackGeometry.Path path, boolean reverse, double toe, double heel, double side) {
         double distance(double fraction) {

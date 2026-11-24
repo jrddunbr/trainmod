@@ -119,7 +119,8 @@ final class VehicleModels {
 
     private static VehicleModels body(TrainVehicle.Kind kind) {
         VehicleModels model = new VehicleModels();
-        model.underframe(kind.freight() || kind == TrainVehicle.Kind.BALLAST_CAR, kind != TrainVehicle.Kind.STEAM_LOCOMOTIVE);
+        model.underframe(kind.freight() || kind == TrainVehicle.Kind.BALLAST_CAR,
+            kind != TrainVehicle.Kind.STEAM_LOCOMOTIVE && kind != TrainVehicle.Kind.TUNNEL_BORE);
         switch (kind) {
             case LOCOMOTIVE -> model.locomotive();
             case FLATCAR -> model.flatcar();
@@ -132,6 +133,23 @@ final class VehicleModels {
             case ELECTRIC_SHUNTER -> model.shunter();
         }
         return model;
+    }
+
+    static double rearAxle(TrainVehicle.Kind kind) {
+        double axle = switch (kind) {
+            case STEAM_LOCOMOTIVE -> -13;
+            case TUNNEL_BORE -> -15;
+            default -> -10.5;
+        };
+        return axle * kind.length / 40;
+    }
+
+    static double frontAxle(TrainVehicle.Kind kind) {
+        return (kind == TrainVehicle.Kind.STEAM_LOCOMOTIVE ? 14 : 13.5) * kind.length / 40;
+    }
+
+    static double boreInnerRearAxle() {
+        return -10 * TrainVehicle.Kind.TUNNEL_BORE.length / 40;
     }
 
     private List<Box> scaled(TrainVehicle.Kind kind) {
@@ -381,6 +399,14 @@ final class VehicleModels {
     }
 
     private void bore() {
+        for (float axle : new float[]{-15, -10, 7.5f, 13.5f}) {
+            box(STEEL, -10, 2, axle - 1.6f, 20, 4, 3.2f);
+            box(WHEEL, -12, 0, axle - 1.9f, 4, 5, 3.8f);
+            box(WHEEL, 8, 0, axle - 1.9f, 4, 5, 3.8f);
+        }
+        for (int side : new int[]{-1, 1}) {
+            box(STEEL, side * 12.8f - 1.25f, 6, 12, 2.5f, 10, 3);
+        }
         box(WORK, -14, 8, -17, 28, 4, 34);
         box(WORK, -13, 12, -16, 26, 4, 14);
         box(STEEL, -12, 37, -16, 24, 3, 14);
@@ -401,6 +427,19 @@ final class VehicleModels {
             box(WORK, x, 16, -15, 2, 5, 12);
             box(LETTERS, x, 26, 2, 2, 2, 3);
         }
+    }
+
+    static List<Box> boreRoadGear() {
+        var model = new VehicleModels();
+        for (int side : new int[]{-1, 1}) {
+            float hub = side * 12.8f;
+            float bottom = (float) (BoreDrive.RETRACTED_TIRE_CLEARANCE * 16);
+            model.box(WHEEL, hub - 2.6f, bottom, 11.5f, 5.2f, 9.6f, 4);
+            model.box(WHEEL, hub - 2.5f, bottom + 2.0f, 10.65f, 5, 5.6f, 5.7f);
+            model.box(STEEL, hub + side * 2.4f - 0.7f, bottom + 2.4f, 12.3f, 1.4f, 4.8f, 2.4f);
+            model.box(0xa9a7a1, hub - 0.65f, bottom + 6, 12.68f, 1.3f, 16, 1.64f);
+        }
+        return model.scaled(TrainVehicle.Kind.TUNNEL_BORE);
     }
 
     private void box(int color, float x, float y, float z, float width, float height, float length) {

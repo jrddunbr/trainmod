@@ -43,7 +43,7 @@ final class TrainVehicle extends VehicleEntity {
         FLATCAR(0.5625f, 2.50f, 0.90f, false),
         GONDOLA(0.8125f, 2.80f, 0.875f, false),
         BOXCAR(1.1875f, 3.00f, 0.90f, false),
-        TUNNEL_BORE(2.65f, 3.15f, true),
+        TUNNEL_BORE(2.65f, 4.15f, true),
         BALLAST_CAR(0.8125f, 2.85f, 0.875f, false),
         STEAM_LOCOMOTIVE(1.43f, 3.65f, 0.90f, true),
         TENDER(1.05f, 2.45f, 0.90f, false),
@@ -100,6 +100,7 @@ final class TrainVehicle extends VehicleEntity {
     static final int RAIL_SUPPLY = 0;
     static final int GRAVEL_SUPPLY = 1;
     static final int STONE_SUPPLY = 2;
+    static final int RAIL_BUFFER = 4;
 
     private static final net.minecraft.network.syncher.EntityDataAccessor<Float> BANK =
         net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
@@ -128,6 +129,9 @@ final class TrainVehicle extends VehicleEntity {
     private static final net.minecraft.network.syncher.EntityDataAccessor<Float> WHEEL_PHASE =
         net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
             net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Float> BORE_TIRES =
+        net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
+            net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
     private static final net.minecraft.network.syncher.EntityDataAccessor<Integer> HEADLIGHT =
         net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
             net.minecraft.network.syncher.EntityDataSerializers.INT);
@@ -153,6 +157,7 @@ final class TrainVehicle extends VehicleEntity {
         builder.define(DOORS, 0);
         builder.define(HANDBRAKE, false);
         builder.define(WHEEL_PHASE, 0f);
+        builder.define(BORE_TIRES, 0f);
         builder.define(HEADLIGHT, 0);
         builder.define(AUDIO, (byte) 0);
     }
@@ -181,10 +186,12 @@ final class TrainVehicle extends VehicleEntity {
     private PartMotion leftDoorMotion = new PartMotion(0);
     private PartMotion rightDoorMotion = new PartMotion(0);
     private PartMotion handbrakeMotion = new PartMotion(0);
+    private PartMotion boreTireMotion = new PartMotion(0);
     private boolean boardFront;
     private boolean boardingTender;
     private int boardingKeyGrace;
     private boolean working;
+    private boolean wideBallast;
     private boolean previousJump;
     private long boardingOrder;
     private long lastAudioTick = Long.MIN_VALUE;
@@ -237,6 +244,10 @@ final class TrainVehicle extends VehicleEntity {
         return (float) handbrakeMotion.at(level().getGameTime() + (double) partial);
     }
 
+    float boreTireExtension(float partial) {
+        return (float) boreTireMotion.at(level().getGameTime() + (double) partial);
+    }
+
     @Override
     public void onSyncedDataUpdated(net.minecraft.network.syncher.EntityDataAccessor<?> key) {
         super.onSyncedDataUpdated(key);
@@ -245,6 +256,8 @@ final class TrainVehicle extends VehicleEntity {
             rightDoorMotion = movePart(rightDoorMotion, doorOpen(false) ? 1 : 0);
         } else if (key.equals(HANDBRAKE)) {
             handbrakeMotion = movePart(handbrakeMotion, handbrakeApplied() ? 90 : 0);
+        } else if (key.equals(BORE_TIRES)) {
+            boreTireMotion = movePart(boreTireMotion, entityData.get(BORE_TIRES));
         }
     }
 
@@ -269,7 +282,7 @@ final class TrainVehicle extends VehicleEntity {
                 rails += units;
             } else {
                 railsOnly = false;
-                if (regulatorCargo(stack)) gravel += units;
+                if (ballastSupply(stack)) gravel += units;
             }
         }
         int load = railsOnly && rails > 0 ? Math.clamp((int) Math.ceil(rails * 4 / cargo.getContainerSize()), 1, 4)
@@ -455,7 +468,7 @@ final class TrainVehicle extends VehicleEntity {
                 working = !working;
                 message(player, working ? "ballast_on" : "ballast_off");
             } else {
-                player.openMenu(new SimpleMenuProvider((id, inv, ignored) -> new StockMenu(id, inv, cargo, kind),
+                player.openMenu(new SimpleMenuProvider((id, inv, ignored) -> new BallastRegulatorMenu(id, inv, cargo, this),
                     getDisplayName()));
             }
         } else if (kind == Kind.TENDER) {
@@ -464,18 +477,18 @@ final class TrainVehicle extends VehicleEntity {
             openStockMenu(player);
         } else if (kind == Kind.STEAM_LOCOMOTIVE) {
             message(player, "tender_board");
-        } else if (kind == Kind.TUNNEL_BORE && held.is(Items.HOPPER)) {
+        } else if (kind == Kind.TUNNEL_BORE && held.is(Items.CHEST)) {
+            player.openMenu(cargoMenu(secondary ? overflow : cargo,
+                Component.translatable(secondary ? "menu.trainmod.bore_2" : "menu.trainmod.bore_1")));
+        } else if (kind == Kind.TUNNEL_BORE && (secondary || held.is(Items.HOPPER))) {
             player.openMenu(new SimpleMenuProvider((id, inv, ignored) -> new SupplyMenu(id, inv, supplies),
                 Component.translatable("menu.trainmod.supplies")));
-        } else if (kind == Kind.TUNNEL_BORE && (secondary || held.is(Items.CHEST))) {
-            boolean second = held.is(Items.CHEST);
-            player.openMenu(cargoMenu(second ? overflow : cargo,
-                Component.translatable(second ? "menu.trainmod.bore_2" : "menu.trainmod.bore_1")));
         } else if (kind.freight()) {
             player.openMenu(cargoMenu(cargo, getDisplayName()));
         } else if (kind.powered) {
             if (player.startRiding(this)) {
-                message(player, "drive_controls");
+                message(player, kind == Kind.TUNNEL_BORE
+                    ? (working ? "bore_drive_working" : "bore_drive_paused") : "drive_controls");
             }
         }
         return InteractionResult.SUCCESS;
@@ -545,7 +558,9 @@ final class TrainVehicle extends VehicleEntity {
             }
         }
         if (speed == 0 && railRoot != null && (tickCount & 7) == 0) {
-            refreshBank(cursor());
+            var rail = cursor();
+            refreshBank(rail);
+            if (kind == Kind.TUNNEL_BORE && rail != null) refreshBoreTires(rail);
         }
     }
 
@@ -743,7 +758,7 @@ final class TrainVehicle extends VehicleEntity {
             return;
         }
         if (kind == Kind.TUNNEL_BORE && working && speed > 0) {
-            var issue = TrackWork.extendIfNeeded(level, driver, this, start, trailingFreight(level));
+            var issue = TrackWork.extendIfNeeded(level, driver, this, start, speed, trailingFreight(level));
             if (issue != null) {
                 stop(driver, issue.message());
                 return;
@@ -823,13 +838,33 @@ final class TrainVehicle extends VehicleEntity {
         Set<UUID> own = new HashSet<>();
         consist.forEach(member -> own.add(member.vehicle.getUUID()));
         RailNetwork.Position current = cursor();
-        RailNetwork.Position lead = current == null ? null : RailNetwork.advance(level, current, speed);
-        List<RailNetwork.Position> targets = plannedPositions(level, consist, lead);
-        if (targets != null && coupleOnImpact(level, consist, targets, own, driver != null)) return true;
-        if (targets == null) {
-            stop(driver, lead == null ? "end_of_track" : "consist_unavailable");
+        if (current == null) {
+            stop(driver, "route_unavailable");
             return false;
         }
+        double travel = speed;
+        String endMessage = kind == Kind.TUNNEL_BORE && speed > 0 && !working ? "bore_enable_work" : "end_of_track";
+        List<RailNetwork.Position> targets = travelPositions(level, consist, current, travel);
+        boolean reachedEnd = targets == null;
+        if (targets == null) {
+            double allowed = 0, blockedTravel = 1;
+            // Check only on a failing step. Stop at the wheel limit instead of one whole tick short of it.
+            for (int i = 0; i < 12; i++) {
+                double fraction = (allowed + blockedTravel) / 2;
+                var candidate = travelPositions(level, consist, current, travel * fraction);
+                if (candidate == null) blockedTravel = fraction;
+                else {
+                    allowed = fraction;
+                    targets = candidate;
+                }
+            }
+            travel *= allowed;
+            if (targets == null || Math.abs(travel) < 1e-5) {
+                stop(driver, endMessage);
+                return false;
+            }
+        }
+        if (coupleOnImpact(level, consist, targets, own, driver != null)) return true;
         int blocked = blockedPosition(level, consist, targets, own);
         if (blocked >= 0) {
             var car = consist.get(blocked).vehicle;
@@ -840,10 +875,18 @@ final class TrainVehicle extends VehicleEntity {
         for (int i = 0; i < consist.size(); i++) {
             TrainVehicle vehicle = consist.get(i).vehicle;
             RailNetwork.Position next = targets.get(i);
+            if (vehicle.kind == Kind.TUNNEL_BORE && BoreDrive.tireExtension(level, next) < 0) {
+                stop(driver, "bore_no_ground");
+                return false;
+            }
+        }
+        for (int i = 0; i < consist.size(); i++) {
+            TrainVehicle vehicle = consist.get(i).vehicle;
+            RailNetwork.Position next = targets.get(i);
             vehicle.moveToRail(next);
             vehicle.lastMoveTick = level.getGameTime();
             vehicle.lastMoveLeader = getUUID();
-            double movement = speed * consist.get(i).movement;
+            double movement = travel * consist.get(i).movement;
             if (vehicle.kind == Kind.STEAM_LOCOMOTIVE) vehicle.turnWheels(level, movement, steaming.contains(vehicle));
             if (vehicle.kind == Kind.LOCOMOTIVE) vehicle.entityData.set(HEADLIGHT, (int) Math.signum(movement));
             if (driver != null && vehicle.kind == Kind.BALLAST_CAR && vehicle.working) {
@@ -851,7 +894,28 @@ final class TrainVehicle extends VehicleEntity {
                 if (track != null) vehicle.regulate(level, driver, track.below());
             }
         }
+        if (reachedEnd) stop(driver, endMessage);
         return true;
+    }
+
+    private List<RailNetwork.Position> travelPositions(ServerLevel level, List<Member> consist,
+                                                      RailNetwork.Position current, double travel) {
+        var lead = kind == Kind.TUNNEL_BORE ? RailNetwork.advanceBore(level, current, travel)
+            : RailNetwork.advance(level, current, travel);
+        var targets = plannedPositions(level, consist, lead);
+        if (targets == null) return null;
+        for (int i = 0; i < consist.size(); i++) {
+            Member member = consist.get(i);
+            Kind stock = member.vehicle.kind;
+            var target = targets.get(i);
+            if (stock == Kind.TUNNEL_BORE) {
+                if (!BoreDrive.onRearRails(level, target)) return null;
+            } else {
+                double axle = travel * member.movement > 0 ? VehicleModels.frontAxle(stock) : VehicleModels.rearAxle(stock);
+                if (RailNetwork.advance(level, target, axle) == null) return null;
+            }
+        }
+        return targets;
     }
 
     private void turnWheels(ServerLevel level, double distance, boolean steaming) {
@@ -866,18 +930,22 @@ final class TrainVehicle extends VehicleEntity {
         }
     }
 
-    static boolean regulatorCargo(ItemStack stack) {
+    static boolean ballastSupply(ItemStack stack) {
         return stack.is(Items.GRAVEL) || stack.is(Trainmod.BALLAST.get().asItem());
     }
 
+    boolean wideBallast() { return wideBallast; }
+
+    void toggleBallastWidth() { wideBallast = !wideBallast; }
+
     void regulate(ServerLevel level, ServerPlayer driver, BlockPos under) {
-        int available = cargo.getItems().stream().filter(TrainVehicle::regulatorCargo).mapToInt(ItemStack::getCount).sum();
+        int available = cargo.getItems().stream().filter(TrainVehicle::ballastSupply).mapToInt(ItemStack::getCount).sum();
         if (available == 0) return;
         int used = TrackWork.ballast(level, driver, under) ? 1 : 0;
-        used += TrackWork.cascadeBallast(level, driver, under, available - used);
+        used += TrackWork.cascadeBallast(level, driver, under, wideBallast, available - used);
         if (used == 0) return;
         for (int slot = 0; used > 0 && slot < cargo.getContainerSize(); slot++) {
-            if (regulatorCargo(cargo.getItem(slot))) used -= cargo.removeItem(slot, used).getCount();
+            if (ballastSupply(cargo.getItem(slot))) used -= cargo.removeItem(slot, used).getCount();
         }
         var sound = level.getBlockState(under).getSoundType(level, under, driver);
         level.playSound(null, under, sound.getPlaceSound(), net.minecraft.sounds.SoundSource.BLOCKS,
@@ -965,7 +1033,9 @@ final class TrainVehicle extends VehicleEntity {
     }
 
     RailNetwork.Position cursor() {
-        return railRoot == null ? null : RailNetwork.locate(level(), railRoot, position(), facing(), railRoute);
+        if (railRoot == null) return null;
+        var rail = RailNetwork.locate(level(), railRoot, position(), facing(), railRoute);
+        return kind == Kind.TUNNEL_BORE && rail != null ? BoreDrive.restoreCenter(level(), rail, position()) : rail;
     }
 
     private Vec3 facing() {
@@ -980,6 +1050,11 @@ final class TrainVehicle extends VehicleEntity {
         setRot((float) Math.toDegrees(Math.atan2(-tangent.x, tangent.z)),
             (float) -Math.toDegrees(Math.atan2(tangent.y, tangent.horizontalDistance())));
         setPos(position.point());
+        if (kind == Kind.TUNNEL_BORE) refreshBoreTires(position);
+    }
+
+    private void refreshBoreTires(RailNetwork.Position position) {
+        entityData.set(BORE_TIRES, (float) Math.max(0, BoreDrive.tireExtension(level(), position)));
     }
 
     private void refreshBank(RailNetwork.Position position) {
@@ -1009,9 +1084,12 @@ final class TrainVehicle extends VehicleEntity {
 
     boolean foulsPoints(List<Vec3> bladePoints, double clearance) {
         var frame = currentFrame(position());
-        var gauge = loadingGauge();
+        double width = SwitchLayout.GAUGE + 0.035;
+        double front = kind == Kind.TUNNEL_BORE && entityData.get(BORE_TIRES) > 0
+            ? VehicleModels.boreInnerRearAxle() : VehicleModels.frontAxle(kind);
+        var gear = new AABB(-width, -0.14, VehicleModels.rearAxle(kind), width, 0.15, front);
         double limit = clearance * clearance;
-        return bladePoints.stream().anyMatch(point -> gauge.distanceToSqr(frame.local(point)) <= limit);
+        return bladePoints.stream().anyMatch(point -> gear.distanceToSqr(frame.local(point)) <= limit);
     }
 
     boolean canMoveTo(ServerLevel level, RailNetwork.Position target, Set<UUID> own) {
@@ -1352,6 +1430,7 @@ final class TrainVehicle extends VehicleEntity {
         links[0] = input.read("Front", UUIDUtil.CODEC).orElse(null);
         links[1] = input.read("Rear", UUIDUtil.CODEC).orElse(null);
         working = input.getBooleanOr("Working", false);
+        wideBallast = kind == Kind.BALLAST_CAR && input.getBooleanOr("WideBallast", false);
         fuel.load(input);
         entityData.set(HANDBRAKE, input.getBooleanOr("Handbrake", false));
         entityData.set(DOORS, input.getIntOr("Doors", 0) & 3);
@@ -1376,6 +1455,7 @@ final class TrainVehicle extends VehicleEntity {
             output.store("Rear", UUIDUtil.CODEC, links[1]);
         }
         output.putBoolean("Working", working);
+        if (kind == Kind.BALLAST_CAR) output.putBoolean("WideBallast", wideBallast);
         fuel.save(output);
         output.putBoolean("Handbrake", handbrakeApplied());
         if (kind == Kind.BOXCAR) output.putInt("Doors", entityData.get(DOORS));
@@ -1411,8 +1491,7 @@ final class TrainVehicle extends VehicleEntity {
         private final Kind stockKind;
 
         StockMenu(int id, Inventory player, SimpleContainer items, Kind kind) {
-            super(kind == Kind.BALLAST_CAR ? MenuType.GENERIC_9x3 : MenuType.GENERIC_9x1,
-                id, player, items, items.getContainerSize() / 9);
+            super(MenuType.GENERIC_9x1, id, player, items, items.getContainerSize() / 9);
             stockKind = kind;
         }
 
@@ -1423,7 +1502,6 @@ final class TrainVehicle extends VehicleEntity {
                 @Override
                 public boolean mayPlace(ItemStack stack) {
                     return switch (stockKind) {
-                        case BALLAST_CAR -> regulatorCargo(stack);
                         case TENDER -> getContainerSlot() == 0 ? stack.is(Items.COAL) : stack.is(Items.WATER_BUCKET);
                         case LOCOMOTIVE -> stack.is(VehicleFuel.DIESEL);
                         default -> false;
@@ -1445,6 +1523,19 @@ final class TrainVehicle extends VehicleEntity {
         }
 
         @Override
+        public ItemStack quickMoveStack(Player player, int index) {
+            if (index < 9) return super.quickMoveStack(player, index);
+            Slot slot = slots.get(index);
+            ItemStack stack = slot.getItem();
+            if (stack.isEmpty()) return ItemStack.EMPTY;
+            ItemStack moved = stack.copy();
+            if (!moveItemStackTo(stack, RAIL_SUPPLY, STONE_SUPPLY + 1, false)) return ItemStack.EMPTY;
+            if (stack.isEmpty()) slot.setByPlayer(ItemStack.EMPTY);
+            else slot.setChanged();
+            return moved;
+        }
+
+        @Override
         protected Slot addSlot(Slot slot) {
             if (slots.size() >= 9) {
                 return super.addSlot(slot);
@@ -1454,8 +1545,8 @@ final class TrainVehicle extends VehicleEntity {
                 @Override
                 public boolean mayPlace(ItemStack stack) {
                     return switch (index) {
-                        case RAIL_SUPPLY -> TrackWork.railSupply(stack);
-                        case GRAVEL_SUPPLY -> stack.is(Items.GRAVEL);
+                        case RAIL_SUPPLY -> TrackWork.railSupplyUnits(stack) > 0;
+                        case GRAVEL_SUPPLY -> ballastSupply(stack);
                         case STONE_SUPPLY -> stack.is(Items.COBBLESTONE);
                         default -> false;
                     };

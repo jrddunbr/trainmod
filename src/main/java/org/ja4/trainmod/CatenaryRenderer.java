@@ -18,6 +18,7 @@ import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.resources.Identifier;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -40,12 +41,12 @@ final class CatenaryRenderer implements BlockEntityRenderer<CatenaryTower.Anchor
         new VehicleModels.Box(STEEL, -1.15f, -1, 0, 2.3f, 0.48f, 16),
         new VehicleModels.Box(STEEL, -1.15f, 0.52f, 0, 2.3f, 0.48f, 16),
         new VehicleModels.Box(STEEL, -0.39f, -0.52f, 0, 0.78f, 1.04f, 16))).get(STEEL);
-    private final ModelPart ceilingHanger = part(STEEL, -1f, 8f, -1f, 2, 8, 2);
+    private final ModelPart ceilingHanger = part(STEEL, -1f, 0, -1f, 2, 16, 2);
     private final ModelPart hanger = part(STEEL, -0.52f, 0, -0.52f, 1.04f, 16, 1.04f);
     private final ModelPart insulator = part(INSULATOR, -1.25f, 0, -1.25f, 2.5f, 3, 2.5f);
 
     private record Assembly(long tick, CatenaryTower.Kind kind, BlockPos step, boolean diagonal, List<Direction> neighbors,
-                            int gantryRise, boolean ceiling, List<Vec3> contacts, List<List<Vec3>> spans) {}
+                            int ceiling, List<Vec3> contacts, List<List<Vec3>> spans) {}
 
     static final class State extends BlockEntityRenderState {
         Assembly assembly;
@@ -85,25 +86,25 @@ final class CatenaryRenderer implements BlockEntityRenderer<CatenaryTower.Anchor
             }
         }
         List<Direction> neighbors = new ArrayList<>();
-        int rise = 0;
+        int ceiling = 0;
         if (tower.kind == CatenaryTower.Kind.GANTRY) {
-            rise = tower.kind.height - Catenary.gantryMount(level, pos);
             for (Direction direction : Direction.Plane.HORIZONTAL) {
-                BlockPos adjacent = pos.above(rise).relative(direction);
-                if (gantryAt(level, adjacent, 0) || gantryAt(level, adjacent.below(), 1)) neighbors.add(direction);
+                if (level.getBlockState(pos.relative(direction)).is(Trainmod.CATENARY_GANTRY.get())) neighbors.add(direction);
+            }
+            for (int height = 1; height <= 2; height++) {
+                BlockPos above = pos.above(height);
+                BlockState state = level.getBlockState(above);
+                if (state.isFaceSturdy(level, above, Direction.DOWN)) {
+                    ceiling = height;
+                    break;
+                }
+                if (!state.isAir()) break;
             }
         }
-        BlockPos above = pos.above(rise + 1);
         render.assembly = new Assembly(level.getGameTime(), tower.kind, CatenaryTower.armStep(anchor.getBlockState()),
-            anchor.getBlockState().getValue(CatenaryTower.DIAGONAL), List.copyOf(neighbors), rise,
-            tower.kind == CatenaryTower.Kind.GANTRY && level.getBlockState(above).isFaceSturdy(level, above, Direction.DOWN),
+            anchor.getBlockState().getValue(CatenaryTower.DIAGONAL), List.copyOf(neighbors), ceiling,
             attachments.stream().map(attachment -> attachment.contact().subtract(origin)).distinct().toList(), List.copyOf(spans));
         cache.put(anchor, render.assembly);
-    }
-
-    private static boolean gantryAt(net.minecraft.world.level.Level level, BlockPos pos, int rise) {
-        return level.getBlockState(pos).is(Trainmod.CATENARY_GANTRY.get())
-            && CatenaryTower.Kind.GANTRY.height - Catenary.gantryMount(level, pos) == rise;
     }
 
     @Override
@@ -113,10 +114,12 @@ final class CatenaryRenderer implements BlockEntityRenderer<CatenaryTower.Anchor
         pose.pushPose();
         pose.translate(0.5, 0, 0.5);
         if (assembly.kind() == CatenaryTower.Kind.GANTRY) {
-            double beamHeight = 0.5 + assembly.gantryRise();
-            if (assembly.ceiling()) submitPart(ceilingHanger, STEEL, new Vec3(0, assembly.gantryRise(), 0), state, pose, collector);
+            double beamHeight = CatenaryTower.GANTRY_BEAM;
+            if (assembly.ceiling() > 0) {
+                vertical(ceilingHanger, new Vec3(0, beamHeight, 0), assembly.ceiling() - beamHeight, state, pose, collector);
+            }
             var contacts = assembly.contacts().isEmpty()
-                ? List.of(new Vec3(0, TrackGeometry.RAIL_HEIGHT + assembly.gantryRise(), 0)) : assembly.contacts();
+                ? List.of(new Vec3(0, CatenaryTower.GANTRY_CONTACT, 0)) : assembly.contacts();
             for (Vec3 contact : contacts) {
                 submitPart(insulator, INSULATOR, contact, state, pose, collector);
                 Vec3 base = new Vec3(contact.x, beamHeight, contact.z);
@@ -175,10 +178,15 @@ final class CatenaryRenderer implements BlockEntityRenderer<CatenaryTower.Anchor
         double top = contact.y + 3 / 16.0;
         double length = Math.abs(top - beamHeight);
         if (length < 0.04) return;
+        vertical(hanger, new Vec3(contact.x, Math.min(top, beamHeight), contact.z), length, state, pose, collector);
+    }
+
+    private static void vertical(ModelPart part, Vec3 start, double length, State state, PoseStack pose,
+                                 SubmitNodeCollector collector) {
         pose.pushPose();
-        pose.translate(contact.x, Math.min(top, beamHeight), contact.z);
+        pose.translate(start.x, start.y, start.z);
         pose.scale(1, (float) length, 1);
-        submitPart(hanger, STEEL, Vec3.ZERO, state, pose, collector);
+        submitPart(part, STEEL, Vec3.ZERO, state, pose, collector);
         pose.popPose();
     }
 

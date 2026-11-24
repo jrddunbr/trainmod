@@ -116,6 +116,12 @@ public final class TrainClient {
     }
 
     @SubscribeEvent
+    static void registerScreens(net.neoforged.neoforge.client.event.RegisterMenuScreensEvent event) {
+        event.register(Trainmod.RAIL_EXTRUDER_MENU.get(), RailExtruderScreen::new);
+        event.register(Trainmod.BALLAST_REGULATOR_MENU.get(), BallastRegulatorScreen::new);
+    }
+
+    @SubscribeEvent
     static void registerRenderers(EntityRenderersEvent.RegisterRenderers event) {
         Trainmod.VEHICLES.forEach((kind, type) ->
             event.registerEntityRenderer(type.get(), context -> new VehicleRenderer<>(context, VehicleModels.forKind(kind), kind)));
@@ -222,6 +228,7 @@ public final class TrainClient {
         float rightDoorProgress;
         float handbrakeAngle;
         float wheelPhase;
+        float boreTireExtension;
         int headlight;
         final Vec3[] couplerTips = new Vec3[2];
         final Vec3[] couplerVectors = new Vec3[2];
@@ -262,6 +269,7 @@ public final class TrainClient {
         private final ModelPart gravel;
         private final ModelPart drawbar;
         private final List<VehicleModels.Wheel> wheels;
+        private final Map<Integer, ModelPart> boreRoadGear;
         private final List<Map<Integer, ModelPart>> wheelParts;
         private final Map<Integer, ModelPart> rods;
         private final ModelPart piston;
@@ -289,6 +297,7 @@ public final class TrainClient {
             doorTravel = kind == TrainVehicle.Kind.BOXCAR ? VehicleModels.OPEN_DOOR_SHIFT * kind.length / 40 : 0;
             gravel = kind == TrainVehicle.Kind.GONDOLA || kind == TrainVehicle.Kind.BALLAST_CAR ? gravel(kind) : null;
             wheels = kind == TrainVehicle.Kind.STEAM_LOCOMOTIVE ? VehicleModels.steamWheels(kind) : List.of();
+            boreRoadGear = kind == TrainVehicle.Kind.TUNNEL_BORE ? bakeColoredCubes(VehicleModels.boreRoadGear()) : Map.of();
             wheelParts = wheels.stream().map(wheel -> bakeColoredCubes(wheel.boxes())).toList();
             rods = wheels.isEmpty() ? Map.of() : bakeColoredCubes(VehicleModels.steamRods(kind));
             piston = wheels.isEmpty() ? null : bakeColoredCubes(List.of(
@@ -325,6 +334,7 @@ public final class TrainClient {
                 state.rightDoorProgress = train.doorProgress(false, partial);
                 state.handbrakeAngle = train.handbrakeAngle(partial);
                 state.wheelPhase = train.wheelPhase(partial);
+                state.boreTireExtension = train.boreTireExtension(partial);
                 state.headlight = train.headlight();
             }
             for (int end = 0; end < 2; end++) {
@@ -362,6 +372,12 @@ public final class TrainClient {
             pose.rotateDegrees(Axis.ZP, (float) Math.toDegrees(Math.atan(state.bank)));
             submitParts(groups, state, pose, collector);
             if (!wheels.isEmpty()) submitSteamGear(state, pose, collector);
+            if (!boreRoadGear.isEmpty()) {
+                pose.pushPose();
+                pose.translate(0, -state.boreTireExtension, 0);
+                submitParts(boreRoadGear, state, pose, collector);
+                pose.popPose();
+            }
             if (!lights.isEmpty()) {
                 for (int end : new int[]{-1, 1}) {
                     boolean leading = state.headlight == end;

@@ -13,6 +13,8 @@ import net.minecraft.world.phys.Vec3;
 
 /** Generates continuous cross sections. Neighboring spans share edges instead of overlapping cuboids. */
 final class RailMesh {
+    static final double TIE_HEIGHT = 0.172;
+    static final double TIE_HALF_WIDTH = 0.064;
     private static final double POINT_END = 2.60;
     private static final double GAUGE = CurveBanking.GAUGE / 2;
     private static final DoubleBinaryOperator FLAT = (distance, lateral) -> 0;
@@ -106,7 +108,7 @@ final class RailMesh {
             var bank = bank(kind, shape.routes().get(tie.route), banking);
             double acrossScale = Math.cos(angle);
             meshes.computeIfAbsent(tie.owner, Mesh::new).box("tie", tie.center, rotated, -halfLength, halfLength,
-                kind.hasBallast() ? 0.126 : 0, 0.172, 0.064,
+                kind.hasBallast() ? 0.126 : 0, TIE_HEIGHT, TIE_HALF_WIDTH,
                 across -> bank.applyAsDouble(tie.distance, across * acrossScale));
         }
         return meshes;
@@ -424,8 +426,7 @@ final class RailMesh {
     static final class Mesh {
         private final BlockPos owner;
         private final boolean shadeQuads;
-        private final StringBuilder text = new StringBuilder("mtllib trainmod:models/block/railway.mtl\no rail\n"
-            + "vt 0 0\nvt 0 1\nvt 1 1\nvt 1 0\n");
+        private final StringBuilder text;
         private int vertex = 1;
         private int uv = 5;
         private String currentMaterial;
@@ -433,8 +434,15 @@ final class RailMesh {
         Mesh(BlockPos owner) { this(owner, true); }
 
         Mesh(BlockPos owner, boolean shadeQuads) {
+            this(owner, shadeQuads, "railway");
+        }
+
+        Mesh(BlockPos owner, boolean shadeQuads, String materialLibrary) {
             this.owner = owner;
             this.shadeQuads = shadeQuads;
+            String object = materialLibrary.equals("railway") ? "rail" : materialLibrary;
+            text = new StringBuilder("mtllib trainmod:models/block/" + materialLibrary + ".mtl\no " + object + "\n"
+                + "vt 0 0\nvt 0 1\nvt 1 1\nvt 1 0\n");
         }
 
         boolean shadeQuads() { return shadeQuads; }

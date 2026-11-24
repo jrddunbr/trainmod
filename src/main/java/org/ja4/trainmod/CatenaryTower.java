@@ -17,6 +17,8 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 
 final class CatenaryTower extends HorizontalDirectionalBlock implements EntityBlock {
     static final BooleanProperty DIAGONAL = BooleanProperty.create("diagonal");
+    static final double GANTRY_CONTACT = 4 / 16.0;
+    static final double GANTRY_BEAM = 8 / 16.0;
 
     enum Kind {
         SINGLE(3, 1), DOUBLE(3, 1, 4), GANTRY(4, 1);

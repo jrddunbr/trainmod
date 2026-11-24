@@ -1,5 +1,6 @@
 package org.ja4.trainmod;
 
+import java.util.function.Predicate;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.item.context.BlockPlaceContext;
@@ -14,8 +15,12 @@ import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
-final class BridgeBlock extends Block {
-    enum Kind { TRESTLE, GIRDER, STONE }
+class BridgeBlock extends Block {
+    enum Kind {
+        TRESTLE, GIRDER, WIDE_GIRDER, STONE;
+
+        boolean steel() { return this == GIRDER || this == WIDE_GIRDER; }
+    }
 
     static final EnumProperty<Direction.Axis> AXIS = BlockStateProperties.HORIZONTAL_AXIS;
     private static final VoxelShape TRESTLE_DECK = box(0, 13, 0, 16, 16, 16);
@@ -56,28 +61,29 @@ final class BridgeBlock extends Block {
     protected VoxelShape getShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext context) {
         return switch (kind) {
             case TRESTLE -> trestleShape(level, pos, state.getValue(AXIS));
-            case GIRDER -> girderShape(level, pos, state.getValue(AXIS));
+            case GIRDER, WIDE_GIRDER -> girderShape(level, pos, state.getValue(AXIS));
             case STONE -> column(level, pos) ? Shapes.block() : STONE_DECK;
         };
     }
 
     boolean canPlace(BlockGetter level, BlockPos pos, Direction.Axis axis) {
         if (kind == Kind.TRESTLE) return grounded(level, pos, TrestleGeometry.HEIGHT);
-        boolean stacked = level.getBlockState(pos.below()).is(this);
-        if (kind == Kind.GIRDER) {
-            return stacked || spanSupported(level, pos, axis, 6) || sideSupported(level, pos, axis);
+        boolean stacked = supportsSection(level.getBlockState(pos.below()));
+        if (kind.steel()) {
+            return stacked || spanSupported(level, pos, axis, 6) || kind == Kind.GIRDER && sideSupported(level, pos, axis);
         }
         return stacked ? grounded(level, pos, 6) : spanSupported(level, pos, axis, 4);
     }
 
     private boolean spanSupported(BlockGetter level, BlockPos pos, Direction.Axis axis, int span) {
-        if (pier(level, pos)) return true;
+        if (pier(level, pos, axis)) return true;
         for (Direction.AxisDirection heading : Direction.AxisDirection.values()) {
             Direction direction = Direction.get(heading, axis);
             for (int distance = 1; distance <= span; distance++) {
                 BlockPos step = pos.relative(direction, distance);
-                if (!aligned(level.getBlockState(step), axis)) break;
-                if (pier(level, step)) return true;
+                BlockState section = level.getBlockState(step);
+                if (!aligned(section, axis)) break;
+                if (((BridgeBlock) section.getBlock()).pier(level, step, axis)) return true;
             }
         }
         return false;
@@ -93,7 +99,7 @@ final class BridgeBlock extends Block {
         return false;
     }
 
-    private boolean pier(BlockGetter level, BlockPos pos) {
+    boolean pier(BlockGetter level, BlockPos pos, Direction.Axis axis) {
         int height = kind == Kind.STONE ? 6 : Math.max(1, pos.getY() - level.getMinY());
         return grounded(level, pos, height);
     }
@@ -133,7 +139,16 @@ final class BridgeBlock extends Block {
     }
 
     boolean aligned(BlockState state, Direction.Axis axis) {
-        return state.is(this) && state.getValue(AXIS) == axis;
+        return supportsSection(state) && state.getValue(AXIS) == axis;
+    }
+
+    private boolean supportsSection(BlockState state) {
+        return state.getBlock() instanceof BridgeBlock bridge
+            && (bridge == this || kind.steel() && bridge.kind.steel()) && bridge.spanCenter(state);
+    }
+
+    boolean spanCenter(BlockState state) {
+        return true;
     }
 
     boolean column(BlockGetter level, BlockPos pos) {
@@ -142,9 +157,13 @@ final class BridgeBlock extends Block {
     }
 
     private boolean grounded(BlockGetter level, BlockPos pos, int maxHeight) {
+        return grounded(level, pos, maxHeight, this::supportsSection);
+    }
+
+    static boolean grounded(BlockGetter level, BlockPos pos, int maxHeight, Predicate<BlockState> column) {
         for (int depth = 1; depth <= maxHeight; depth++) {
             BlockPos below = pos.below(depth);
-            if (level.getBlockState(below).is(this)) continue;
+            if (column.test(level.getBlockState(below))) continue;
             return solidTop(level, below);
         }
         return false;

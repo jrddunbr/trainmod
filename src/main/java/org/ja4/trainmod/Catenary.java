@@ -19,7 +19,12 @@ final class Catenary {
     private static final double POLE_CLEARANCE = 0.90;
 
     record Attachment(BlockPos tower, RailNetwork.Rail rail, double distance, int offset) {
-        Vec3 contact() { return rail.point(distance).add(0, offset, 0); }
+        Vec3 contact() {
+            Vec3 point = rail.point(distance);
+            double height = offset == CatenaryTower.Kind.GANTRY.height
+                ? tower.getY() + CatenaryTower.GANTRY_CONTACT : point.y + offset;
+            return new Vec3(point.x, height, point.z);
+        }
         double height() { return contact().y; }
     }
     record Span(Attachment end, double length, List<Vec3> wire) {}
@@ -69,7 +74,28 @@ final class Catenary {
     }
 
     static List<Span> spansFrom(Level level, Attachment start, int direction) {
-        return follow(level, start.rail(), start.distance(), direction, start.offset(), start.tower(), true);
+        return follow(level, start.rail(), start.distance(), direction, start.offset(), start.tower(), true)
+            .stream().map(span -> seatWire(start, span)).toList();
+    }
+
+    private static Span seatWire(Attachment start, Span span) {
+        var path = span.wire();
+        if (path.size() < 2) return span;
+        double first = start.height() - path.getFirst().y;
+        double last = span.end().height() - path.getLast().y;
+        if (Math.abs(first) < EPSILON && Math.abs(last) < EPSILON) return span;
+        double length = 0;
+        for (int i = 1; i < path.size(); i++) length += path.get(i - 1).distanceTo(path.get(i));
+        if (length <= EPSILON) return span;
+        List<Vec3> seated = new ArrayList<>();
+        seated.add(start.contact());
+        double distance = 0;
+        for (int i = 1; i < path.size() - 1; i++) {
+            distance += path.get(i - 1).distanceTo(path.get(i));
+            seated.add(path.get(i).add(0, first + (last - first) * distance / length, 0));
+        }
+        seated.add(span.end().contact());
+        return new Span(span.end(), span.length(), List.copyOf(seated));
     }
 
     private static Attachment attachment(RailNetwork.Rail rail, BlockPos cell, BlockPos tower,

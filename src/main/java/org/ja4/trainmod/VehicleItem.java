@@ -40,6 +40,13 @@ final class VehicleItem extends Item {
             return InteractionResult.FAIL;
         }
         TrainVehicle vehicle = new TrainVehicle(Trainmod.VEHICLES.get(kind).get(), level, kind);
+        if (kind == TrainVehicle.Kind.TUNNEL_BORE) {
+            position = BoreDrive.placement(level, position);
+            if (position == null || BoreDrive.tireExtension(level, position) < 0) {
+                context.getPlayer().sendOverlayMessage(Component.translatable("message.trainmod.bore_support"));
+                return InteractionResult.FAIL;
+            }
+        }
         if (!level.mayInteract(context.getPlayer(), cell) || !vehicle.canMoveTo(level, position, java.util.Set.of())) {
             return InteractionResult.FAIL;
         }

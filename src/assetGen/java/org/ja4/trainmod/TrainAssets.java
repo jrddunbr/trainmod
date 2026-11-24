@@ -178,17 +178,27 @@ public final class TrainAssets {
     }
 
     private void obj(String name, RailMesh.Mesh mesh, boolean hasBallast) throws IOException {
-        String path = "models/block/" + name;
         Map<String, String> textures = TRACK_TEXTURES;
         if (!hasBallast) {
             textures = new HashMap<>(TRACK_TEXTURES);
             textures.put("particle", TRACK_TEXTURES.get("tie"));
         }
+        obj(name, mesh, textures, false);
+    }
+
+    private void obj(String name, RailMesh.Mesh mesh, Map<String, String> textures, boolean inventory) throws IOException {
+        String path = "models/block/" + name;
         writeText("assets/trainmod/" + path + ".obj", mesh.contents());
-        write("assets/trainmod/" + path + ".json", Map.of("loader", "neoforge:obj",
+        var settings = new HashMap<String, Object>(Map.of("loader", "neoforge:obj",
             "model", "trainmod:" + path + ".obj", "textures", textures,
             "ambientocclusion", false, "automatic_culling", false, "flip_v", true, "emissive_ambient", false,
             "shade_quads", mesh.shadeQuads()));
+        if (inventory) {
+            settings.put("parent", "minecraft:block/block");
+            settings.put("display", Map.of("gui", Map.of("rotation", vector(27, 150, 0),
+                "translation", vector(0, -2.5, 0), "scale", vector(0.47, 0.47, 0.47))));
+        }
+        write("assets/trainmod/" + path + ".json", settings);
     }
 
     private void trackItem(TrackGeometry.Kind kind, String id) throws IOException {
@@ -253,10 +263,24 @@ public final class TrainAssets {
         write("assets/trainmod/blockstates/signal.json", Map.of("variants", signalStates));
         switchStands();
         bufferStops();
+        railExtruder();
         item("switch_stand", "block/switch_stand_straight");
         item("signal", "block/signal_retired");
         loot("switch_stand", "trainmod:switch_stand");
         loot("signal", "trainmod:signal");
+    }
+
+    private void railExtruder() throws IOException {
+        model("rail_extruder", Map.of("frame", "trainmod:block/cast_iron", "casing", "minecraft:block/iron_block",
+                "roller", "minecraft:block/copper_block", "rail", "trainmod:block/steel_head", "particle", "trainmod:block/cast_iron"),
+            List.of(cube(0, 0, 0, 16, 12, 16, "frame"), cube(1, 4, 0, 15, 10, 1, "casing"),
+                cube(0, 12, 0, 3, 16, 16, "casing"), cube(13, 12, 0, 16, 16, 16, "casing"),
+                cube(3, 12, 3, 13, 15, 6, "roller"), cube(3, 12, 10, 13, 15, 13, "roller"),
+                cube(6, 6, 0, 10, 8, 0.5, "rail")));
+        write("assets/trainmod/blockstates/rail_extruder.json", Map.of("variants", Map.of("", ref("rail_extruder"))));
+        item("rail_extruder", "block/rail_extruder");
+        loot("rail_extruder", "trainmod:rail_extruder");
+        write("data/minecraft/tags/block/mineable/pickaxe.json", Map.of("values", List.of("trainmod:rail_extruder")));
     }
 
     private void infrastructure() throws IOException {
@@ -268,36 +292,49 @@ public final class TrainAssets {
             item(id, "block/" + id);
             loot(id, "trainmod:" + id);
         }
+        item("wide_steel_girder", "item/wide_steel_girder");
+        write("assets/trainmod/models/item/wide_steel_girder.json", Map.of("parent", "trainmod:block/wide_steel_girder",
+            "display", Map.of("gui", Map.of("rotation", vector(30, 225, 0), "scale", vector(0.34, 0.34, 0.34)),
+                "fixed", Map.of("scale", vector(0.31, 0.31, 0.31)))));
+        write("data/trainmod/loot_table/blocks/wide_steel_girder.json", Map.of("type", "minecraft:block", "pools", List.of(
+            Map.of("rolls", 1, "conditions", List.of(Map.of("condition", "minecraft:survives_explosion"),
+                Map.of("condition", "minecraft:block_state_property", "block", "trainmod:wide_steel_girder",
+                    "properties", Map.of("part", "1"))),
+                "entries", List.of(Map.of("type", "minecraft:item", "name", "trainmod:wide_steel_girder"))))));
     }
 
     private void signalCabin() throws IOException {
         Map<String, Object> states = new HashMap<>();
-        Map<String, String> texture = Map.of("steel", "minecraft:block/iron_block", "trim", "trainmod:block/steel_web",
-            "particle", "minecraft:block/iron_block");
+        Map<String, String> textures = Map.of("panel", "trainmod:block/signal_cabin_panel",
+            "door", "trainmod:block/signal_cabin_door", "roof", "trainmod:block/signal_cabin_roof",
+            "trim", "trainmod:block/signal_cabin_trim", "hardware", "trainmod:block/signal_cabin_hardware",
+            "lock", "trainmod:block/signal_cabin_lock", "particle", "trainmod:block/signal_cabin_panel");
+        StringBuilder materials = new StringBuilder();
+        for (String key : List.of("panel", "door", "roof", "trim", "hardware", "lock")) {
+            materials.append("newmtl ").append(key).append("\nKd 1 1 1\nmap_Kd #").append(key).append("\n");
+        }
+        writeText("assets/trainmod/models/block/signal_cabin.mtl", materials.toString());
+        texture("block/signal_cabin_panel", 0x878e92, 16);
+        texture("block/signal_cabin_door", 0x717a7f, 16);
+        texture("block/signal_cabin_roof", 0x5c6468, 16);
+        texture("block/signal_cabin_trim", 0x51585d, 16);
+        texture("block/signal_cabin_hardware", 0x383f44, 16);
+        texture("block/signal_cabin_lock", 0xa79053, 16);
         for (String half : List.of("lower", "upper")) {
             boolean upper = half.equals("upper");
-            double height = upper ? 8 : 16;
-            var walls = new ArrayList<>(List.of(cube(0, 0, 15.15, 16, height, 16, "steel"),
-                cube(0, 0, 0, 0.85, height, 15.15, "steel"), cube(15.15, 0, 0, 16, height, 15.15, "steel")));
-            if (upper) walls.add(cube(0, 7, 0, 16, 8, 16, "trim"));
-            var closed = new ArrayList<>(walls);
-            closed.add(cube(0.85, 0, 0, 15.15, height, 0.85, "steel"));
-            if (!upper) closed.add(cube(11.9, 10.5, 0, 13.9, 11.2, 0.9, "trim"));
-            model("signal_cabin_" + half + "_closed", texture, closed);
-            model("signal_cabin_" + half + "_open", texture, walls);
-            for (var facing : net.minecraft.core.Direction.Plane.HORIZONTAL) {
-                int rotation = 90 * facing.get2DDataValue();
+            for (String hinge : List.of("left", "right")) {
                 for (boolean open : new boolean[]{false, true}) {
-                    String variant = "facing=" + facing.getName() + ",half=" + half + ",open=" + open;
-                    states.put(variant, Map.of("model", "trainmod:block/signal_cabin_" + half + (open ? "_open" : "_closed"),
-                        "y", rotation));
+                    String name = "signal_cabin_" + half + "_" + hinge + (open ? "_open" : "_closed");
+                    obj(name, SignalCabinMesh.create(!upper, upper, open, hinge.equals("right")), textures, false);
+                    for (var facing : net.minecraft.core.Direction.Plane.HORIZONTAL) {
+                        String variant = "facing=" + facing.getName() + ",half=" + half + ",hinge=" + hinge + ",open=" + open;
+                        states.put(variant, directionRef(name, 90 * facing.get2DDataValue()));
+                    }
                 }
             }
         }
         write("assets/trainmod/blockstates/signal_cabin.json", Map.of("variants", states));
-        model("signal_cabin", texture, List.of(cube(1, 0, 1, 15, 22, 15, "steel"),
-            cube(0.75, 22, 0.75, 15.25, 24, 15.25, "trim"), cube(4, 0, 0.8, 12, 20, 1, "trim"),
-            cube(5, 0, 0.65, 11, 19, 0.8, "steel"), cube(9.2, 10.5, 0.3, 10.2, 11.3, 0.65, "trim")));
+        obj("signal_cabin", SignalCabinMesh.create(true, true, false, true), textures, true);
         item("signal_cabin", "block/signal_cabin");
         write("data/trainmod/loot_table/blocks/signal_cabin.json", Map.of("type", "minecraft:block", "pools", List.of(
             Map.of("rolls", 1, "conditions", List.of(Map.of("condition", "minecraft:survives_explosion"),
@@ -355,8 +392,8 @@ public final class TrainAssets {
         }
         girders.add(cube(3, 10.5, 3, 13, 12, 4.75, "metal"));
         girders.add(cube(3, 10.5, 11.25, 13, 12, 13, "metal"));
-        girders.add(rotated(1.3, 11.6, 7.1, 14.7, 12.7, 8.9, "metal", 8, 12, 8, 45, 0));
-        girders.add(rotated(1.3, 11.6, 7.1, 14.7, 12.7, 8.9, "metal", 8, 12, 8, -45, 0));
+        girders.add(rotated(1.3, 11.4, 7.1, 14.7, 12.5, 8.9, "metal", 8, 12, 8, 45, 0));
+        girders.add(rotated(1.3, 11.7, 7.1, 14.7, 12.8, 8.9, "metal", 8, 12, 8, -45, 0));
         model("steel_girder", steel, girders);
         model("steel_girder_foot", steel, foundations);
         model("steel_girder_column", steel, columns);
@@ -367,6 +404,7 @@ public final class TrainAssets {
                 "east", ref("steel_girder_side"), "west", directionRef("steel_girder_side", 180))),
             "axis=x", bridgeVariant(Map.of("base", directionRef("steel_girder", 90), "foot", directionRef("steel_girder_foot", 90), "column", directionRef("steel_girder_column", 90),
                 "south", directionRef("steel_girder_side", 90), "north", directionRef("steel_girder_side", 270))))));
+        wideGirderModels(steel);
 
         var stone = Map.of("stone", "minecraft:block/stone_bricks", "particle", "minecraft:block/stone_bricks");
         model("stone_arch", stone, List.of(cube(0, 11, 0, 16, 16, 16, "stone")));
@@ -379,6 +417,101 @@ public final class TrainAssets {
             stones.put("arch_" + i, ref("stone_arch_" + i));
         }
         write("assets/trainmod/blockstates/stone_arch.json", Map.of("variants", Map.of("", bridgeVariant(stones))));
+    }
+
+    private void wideGirderModels(Map<String, String> steel) throws IOException {
+        var textures = new HashMap<>(steel);
+        textures.put("tie", TRACK_TEXTURES.get("tie"));
+        model("wide_steel_girder_empty", steel, List.of());
+        var states = new HashMap<String, Object>();
+        var inventory = new ArrayList<Map<String, Object>>();
+        for (int part = 0; part < 3; part++) {
+            String name = "wide_steel_girder_" + part;
+            String foot = "wide_steel_girder_empty";
+            String column = "wide_steel_girder_empty";
+            if (part != WideGirder.CENTER) {
+                foot = name + "_foot";
+                column = name + "_column";
+                model(foot, steel, wideGirderSupport(part, WideGirder.GIRDER_DEPTH));
+                model(column, steel, wideGirderSupport(part, 16));
+            }
+            model(name, textures, wideGirderSection(part, 0));
+            inventory.addAll(wideGirderSection(part, 16 * (part - WideGirder.CENTER)));
+            states.put("axis=z,part=" + part, bridgeVariant(Map.of("base", ref(name), "foot", ref(foot), "column", ref(column))));
+            states.put("axis=x,part=" + part, bridgeVariant(Map.of("base", directionRef(name, 90),
+                "foot", directionRef(foot, 90), "column", directionRef(column, 90))));
+        }
+        model("wide_steel_girder", textures, inventory);
+        write("assets/trainmod/blockstates/wide_steel_girder.json", Map.of("variants", states));
+    }
+
+    private static List<Map<String, Object>> wideGirderSupport(int part, int height) {
+        int edge = part == 0 ? WideGirder.WEST_EDGE : WideGirder.EAST_EDGE;
+        return List.of(cube(edge, 0, 5, edge + 4, height, 6, "flange"),
+            cube(edge, 0, 10, edge + 4, height, 11, "flange"),
+            cube(edge + 1.5, 0, 6, edge + 2.5, height, 10, "metal"));
+    }
+
+    private static List<Map<String, Object>> wideGirderSection(int part, int shift) {
+        var parts = new ArrayList<Map<String, Object>>();
+        double left = shift + (part == 0 ? 2 : 0);
+        double right = shift + (part == 2 ? 14 : 16);
+        double tieHalfWidth = 2 * RailMesh.TIE_HALF_WIDTH * 16;
+        double tieBottom = 16 - 2 * tieHalfWidth;
+        double spanOffset = 16 * (part - WideGirder.CENTER) - shift;
+        if (part != WideGirder.CENTER) {
+            double edge = shift + (part == 0 ? WideGirder.WEST_EDGE : WideGirder.EAST_EDGE);
+            parts.add(cube(edge, WideGirder.GIRDER_DEPTH, 0, edge + 4, 9.5, 16, "flange"));
+            parts.add(cube(edge + 1, 9.5, 0, edge + 3, 14.5, 16, "metal"));
+            parts.add(cube(edge, 14.5, 0, edge + 4, 16, 16, "flange"));
+        }
+        for (int tie = 0; tie < 3; tie++) {
+            double z = (tie + 0.5) * 16 / 3;
+            parts.add(cube(left, tieBottom - 1.5, z - 0.65, right, tieBottom, z + 0.65, "metal"));
+            addDeckTie(parts, left + (part == 0 ? 2 : 0), right - (part == 2 ? 2 : 0),
+                spanOffset, tieBottom, z - tieHalfWidth, z + tieHalfWidth);
+        }
+        // Split each diagonal brace at the block boundaries so it follows the complete deck.
+        double middle = (left + right) / 2;
+        double braceHalfWidth = 0.55;
+        double slopeMagnitude = (16 - 2 * braceHalfWidth) / 44;
+        double halfLength = (right - left) * Math.hypot(1, slopeMagnitude) / 2;
+        double angle = Math.toDegrees(Math.atan(slopeMagnitude));
+        for (int slope : new int[]{-1, 1}) {
+            double z = 8 + slope * (middle + spanOffset - 8) * slopeMagnitude;
+            double height = tieBottom - 0.9 + slope * 0.18;
+            double braceStart = middle - halfLength + (part == 0 ? 0 : 0.015);
+            double braceEnd = middle + halfLength - (part == 2 ? 0 : 0.015);
+            parts.add(rotated(braceStart, height - 0.6, z - braceHalfWidth,
+                braceEnd, height + 0.6, z + braceHalfWidth, "metal", middle, height, z, -slope * angle, 0));
+        }
+        return parts;
+    }
+
+    private static void addDeckTie(List<Map<String, Object>> parts, double left, double right, double spanOffset,
+                                   double bottom, double z1, double z2) {
+        double size = round(z2 - z1);
+        for (double x = left; x < right;) {
+            // Rail ties tile once per block along the grain, with a shallow strip across the end.
+            double along = x + spanOffset + 12;
+            double start = along % 16;
+            double end = Math.min(right, x + 16 - start);
+            double uvEnd = start + end - x;
+            var tie = cube(x, bottom, z1, end, 16, z2, "tie");
+            var faces = new HashMap<String, Object>();
+            var top = Map.of("texture", "#tie", "uv", List.of(start, 0, uvEnd, size));
+            faces.put("up", top);
+            faces.put("down", top);
+            var sideUv = List.of(0, start, size, uvEnd);
+            faces.put("north", Map.of("texture", "#tie", "uv", sideUv, "rotation", 90));
+            faces.put("south", Map.of("texture", "#tie", "uv", sideUv, "rotation", 270));
+            var endGrain = Map.of("texture", "#tie", "uv", List.of(0, 0, size, size));
+            if (along == 0) faces.put("west", endGrain);
+            if (end + spanOffset == 28) faces.put("east", endGrain);
+            tie.put("faces", faces);
+            parts.add(tie);
+            x = end;
+        }
     }
 
     private static Map<String, Object> directionRef(String model, int rotation) {
@@ -541,6 +674,24 @@ public final class TrainAssets {
             ".........dsshd..", ".........sh..d..", ".........sh..d..", "........dsshd...",
             "......dsshd.....", ".....dshd.......", "...dsshd........", "..dshd..........", "..dsd...........",
             "...d............", "................", "................", "................"));
+        tool("rail", List.of("................", "............hh..", "..........hhhs..", ".........hhssd..",
+            "........hsssd...", ".......hsssd....", "......hsssd.....", ".....hsssd......",
+            "....hsssd.......", "...hsssd........", "..hsssd.........", ".hsssd..........",
+            ".sssd...........", ".ddsd...........", "..dd............", "................"));
+        BufferedImage ties = new BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB);
+        var graphics = ties.createGraphics();
+        for (int i = 0; i < 4; i++) {
+            int x = 2 + i, y = 10 - 3 * i;
+            graphics.setColor(new java.awt.Color(0x473226));
+            graphics.fillRect(x, y, 10, 4);
+            graphics.setColor(new java.awt.Color(0x906345));
+            graphics.fillRect(x + 1, y, 9, 2);
+        }
+        graphics.setColor(new java.awt.Color(0xc2b599));
+        graphics.drawLine(5, 12, 8, 1);
+        graphics.drawLine(9, 12, 12, 1);
+        graphics.dispose();
+        generatedItem("tie_bundle", ties);
     }
 
     private void tool(String id, List<String> pixels) throws IOException {
@@ -566,10 +717,8 @@ public final class TrainAssets {
     }
 
     private void recipes() throws IOException {
-        write("data/trainmod/recipe/ballast.json", Map.of("type", "minecraft:crafting_shapeless",
-            "ingredients", List.of("minecraft:gravel"), "result", Map.of("id", "trainmod:ballast", "count", 1)));
-        write("data/trainmod/recipe/ballast_stonecutter.json", Map.of("type", "minecraft:stonecutting",
-            "ingredient", "minecraft:gravel", "result", Map.of("id", "trainmod:ballast", "count", 1)));
+        shapeless("ballast", 2, "minecraft:gravel");
+        stonecutting("ballast", 2, "minecraft:gravel");
         write("data/trainmod/tags/item/diesel_buckets.json", Map.of("values",
             List.of(Map.of("id", "#" + VehicleFuel.EXTERNAL_DIESEL.location(), "required", false), "trainmod:diesel_bucket")));
         write("data/trainmod/recipe/diesel_bucket.json", Map.of("type", "trainmod:diesel",
@@ -582,39 +731,18 @@ public final class TrainAssets {
             "................", "................", "................", "................",
             "................", "................", "................", "................")));
         item("diesel_bucket", "item/diesel_bucket");
-        var rails = Map.of("R", "rail", "G", "gravel", "S", "stick", "I", "iron_ingot", "T", "redstone_torch");
-        recipe("straight_rail", 1, List.of("R", "G"), Map.of("R", "rail", "G", "gravel"));
-        recipe("bridge_straight_rail", 1, List.of("R", "P"), Map.of("R", "rail", "P", "spruce_planks"));
-        recipe("straight_3_rail", 1, List.of("RRR", "GGG"), rails, "RG");
-        recipe("straight_6_rail", 1, List.of("RRR", "GGG", "RRR"), rails, "RG");
-        recipe("straight_8_rail", 1, List.of("RRR", "RGR", "RRR"), rails, "RG");
-        recipe("straight_12_rail", 1, List.of("RRR", "GGG", "RRR"),
-            Map.of("R", "trainmod:straight_rail", "G", "gravel"));
-        recipe("crossover_90_rail", 1, List.of(" R ", "RGR", " R "), rails, "RG");
-        recipe("crossover_45_rail", 1, List.of(" RR", "RGR", "RR "), rails, "RG");
-        recipe("turnout_parallel_long_rail", 1, List.of("RRR", "RTR", "RIR"), rails, "RTI");
-        recipe("scissors_rail", 1, List.of("RTR", "RIR", "RTR"), rails, "RTI");
-        recipe("wye_medium_rail", 1, List.of("R R", "RTR", "RGR"), rails, "RTG");
-        recipe("curve_small_rail", 1, List.of(" R", "RR", "GG"), rails, "RG");
-        recipe("curve_medium_rail", 1, List.of("  R", " RR", "RRG"), rails, "RG");
-        recipe("curve_large_rail", 1, List.of("  R", "RRR", "RRG"), rails, "RG");
-        recipe("curve_medium_grade_rail", 1, List.of("C", "S"),
-            Map.of("C", "trainmod:curve_medium_rail", "S", "stone"));
-        recipe("curve_large_grade_rail", 1, List.of("C", "S"),
-            Map.of("C", "trainmod:curve_large_rail", "S", "stone"));
-        recipe("grade_6_rail", 1, List.of("RRR", "SSG"), rails, "RSG");
-        recipe("grade_8_rail", 1, List.of("RRR", "SSG", " G "), rails, "RSG");
-        recipe("turnout_45_rail", 1, List.of("R R", "RTR", " G "), rails, "RTG");
-        recipe("turnout_parallel_rail", 1, List.of("RRR", "RTR", " I "), rails, "RTI");
-        recipe("wye_rail", 1, List.of("R R", "RTR", " R "), rails, "RT");
+        recipe("rail_extruder", 1, List.of("PFP", "CRC", "III"), Map.of("P", "piston", "F", "furnace",
+            "C", "copper_ingot", "R", "redstone", "I", "iron_ingot"));
+        recipe("tie_bundle", 2, List.of("P ", " P"), Map.of("P", "#minecraft:planks"));
+        stonecutting("tie_bundle", 1, "#minecraft:planks");
+        trackRecipes();
         recipe("buffer_stop", 1, List.of("IRI", "P P", "PPP"),
             Map.of("I", "iron_ingot", "R", "red_dye", "P", "spruce_planks"));
         recipe("coupler", 1, List.of(" II", " CI", "S  "), Map.of("I", "iron_ingot", "C", "iron_chain", "S", "stick"));
         recipe("switch_stand", 1, List.of(" T ", " L ", " I "), Map.of("T", "redstone_torch", "L", "lever", "I", "iron_ingot"));
         recipe("signal_cabin", 1, List.of("III", "IDI", "III"), Map.of("I", "iron_ingot", "D", "iron_door"));
-        recipe("wood_trestle", 2, List.of("PPP", "L L", "L L"), Map.of("P", "spruce_planks", "L", "spruce_log"));
         recipe("steel_girder", 4, List.of("III", " I ", "III"), Map.of("I", "iron_ingot"));
-        recipe("stone_arch", 4, List.of("SSS", "S S"), Map.of("S", "stone_bricks"));
+        recipe("wide_steel_girder", 1, List.of(" T ", "G G"), Map.of("T", "trainmod:tie_bundle", "G", "trainmod:steel_girder"));
         recipe("catenary_single", 2, List.of("IIC", "I  ", "I  "), Map.of("I", "iron_ingot", "C", "copper_ingot"));
         recipe("catenary_double", 2, List.of("CIC", "I I", "I I"), Map.of("I", "iron_ingot", "C", "copper_ingot"));
         recipe("catenary_gantry", 4, List.of("III", " C "), Map.of("I", "iron_ingot", "C", "copper_ingot"));
@@ -632,13 +760,48 @@ public final class TrainAssets {
         recipe("ballast_car", 1, List.of(" H ", "PFP"), Map.of("H", "hopper", "P", "piston", "F", "trainmod:flatcar"));
     }
 
-    private void recipe(String id, int count, List<String> pattern, Map<String, String> pool, String required) throws IOException {
-        Map<String, String> ingredients = new HashMap<>();
-        for (char symbol : required.toCharArray()) {
-            String key = Character.toString(symbol);
-            ingredients.put(key, pool.get(key));
-        }
-        recipe(id, count, pattern, ingredients);
+    private void trackRecipes() throws IOException {
+        String rail = "trainmod:rail", ties = "trainmod:tie_bundle";
+        String straight = "trainmod:straight_rail", straight3 = "trainmod:straight_3_rail", straight6 = "trainmod:straight_6_rail";
+        String straight8 = "trainmod:straight_8_rail", straight12 = "trainmod:straight_12_rail";
+        String small = "trainmod:curve_small_rail", medium = "trainmod:curve_medium_rail", large = "trainmod:curve_large_rail";
+        String stone = "minecraft:stone", torch = "minecraft:redstone_torch";
+
+        recipe("straight_rail", 1, List.of("R R", " T ", " B "), Map.of("R", rail, "T", ties, "B", "trainmod:ballast"));
+        recipe("bridge_straight_rail", 1, List.of("R R", " T "), Map.of("R", rail, "T", ties));
+        shapeless("straight_3_rail", 1, straight, straight, straight);
+        shapeless("straight_6_rail", 1, straight3, straight3);
+        shapeless("straight_8_rail", 1, straight6, straight, straight);
+        shapeless("straight_12_rail", 1, straight6, straight6);
+
+        shapeless("curve_small_rail", 1, straight3, straight, straight, ties);
+        shapeless("curve_medium_rail", 1, straight8, straight, ties);
+        shapeless("curve_large_rail", 1, straight12, straight, ties);
+        shapeless("curve_medium_grade_rail", 1, medium, stone);
+        shapeless("curve_large_grade_rail", 1, large, stone);
+        shapeless("grade_6_rail", 1, straight6, stone, stone);
+        shapeless("grade_8_rail", 1, straight8, stone, stone);
+
+        var crossing = Map.of("S", straight3, "T", ties);
+        recipe("crossover_90_rail", 1, List.of(" S ", " T ", " S "), crossing);
+        recipe("crossover_45_rail", 1, List.of("  S", " T ", "S  "), crossing);
+        shapeless("turnout_45_rail", 1, straight3, straight, small, torch);
+        shapeless("turnout_parallel_rail", 1, straight8, medium, torch);
+        shapeless("turnout_parallel_long_rail", 1, straight12, straight3, large, torch);
+        shapeless("wye_rail", 1, small, small, torch);
+        shapeless("wye_medium_rail", 1, medium, medium, torch);
+        shapeless("scissors_rail", 1, straight12, straight12, medium, medium, torch, torch, torch, torch);
+    }
+
+    private void shapeless(String id, int count, String... ingredients) throws IOException {
+        write("data/trainmod/recipe/" + id + ".json", Map.of("type", "minecraft:crafting_shapeless",
+            "ingredients", List.of(ingredients), "result", Map.of("id", "trainmod:" + id, "count", count)));
+        unlockRecipe(id, ingredients[0]);
+    }
+
+    private void stonecutting(String id, int count, String ingredient) throws IOException {
+        write("data/trainmod/recipe/" + id + "_stonecutter.json", Map.of("type", "minecraft:stonecutting",
+            "ingredient", ingredient, "result", Map.of("id", "trainmod:" + id, "count", count)));
     }
 
     private void recipe(String id, int count, List<String> pattern, Map<String, String> ingredients) throws IOException {
@@ -647,8 +810,12 @@ public final class TrainAssets {
         write("data/trainmod/recipe/" + id + ".json", Map.of("type", "minecraft:crafting_shaped",
             "pattern", pattern, "key", key, "result", Map.of("id", "trainmod:" + id, "count", count)));
         String firstSymbol = pattern.getFirst().trim().substring(0, 1);
+        unlockRecipe(id, key.get(firstSymbol));
+    }
+
+    private void unlockRecipe(String id, String item) throws IOException {
         var ingredient = Map.of("trigger", "minecraft:inventory_changed",
-            "conditions", Map.of("items", List.of(Map.of("items", key.get(firstSymbol)))));
+            "conditions", Map.of("items", List.of(Map.of("items", item))));
         var known = Map.of("trigger", "minecraft:recipe_unlocked", "conditions", Map.of("recipes", "trainmod:" + id));
         write("data/trainmod/advancement/recipes/" + id + ".json", Map.of("parent", "minecraft:recipes/root",
             "criteria", Map.of("has_ingredient", ingredient, "has_recipe", known),
@@ -714,6 +881,8 @@ public final class TrainAssets {
             for (int x = 0; x < size; x++) {
                 int difference = path.equals("block/creosote")
                     ? (y % 4) * 4 - 6 + Math.floorMod(x / 3 * 23 ^ (y % 4) * 59, 7) - 3
+                    : path.equals("block/signal_cabin_panel") ? (x % 4 == 0 ? 16 : x % 4 == 3 ? -17 : 0)
+                        + Math.floorMod(x * 13 ^ y * 11, 5) - 2
                     : Math.floorMod(x * 23 ^ y * 59 ^ (x / 3 + y / 3) * 17, 11) - 5;
                 int r = Math.clamp((color >> 16) + difference, 0, 255);
                 int g = Math.clamp(((color >> 8) & 255) + difference, 0, 255);

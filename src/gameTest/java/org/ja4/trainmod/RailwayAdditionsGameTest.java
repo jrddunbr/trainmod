@@ -19,13 +19,17 @@ import net.minecraft.world.item.crafting.SingleRecipeInput;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.storage.TagValueInput;
 import net.minecraft.world.level.storage.TagValueOutput;
 import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.transfer.item.ItemResource;
+import net.neoforged.neoforge.transfer.transaction.Transaction;
 import net.neoforged.neoforge.event.PlayLevelSoundEvent;
 import net.neoforged.neoforge.event.level.block.BreakBlockEvent;
 
@@ -40,11 +44,13 @@ final class RailwayAdditionsGameTest {
             "The fallback recipe turns its water bucket into a tagged diesel bucket");
         var gravel = new ItemStack(Items.GRAVEL);
         var crafted = CraftingInput.of(1, 1, List.of(gravel));
-        test.assertTrue(recipes.getRecipeFor(RecipeType.CRAFTING, crafted, level).orElseThrow().value()
-            .assemble(crafted).is(Trainmod.BALLAST.get().asItem()), "One gravel crafts one ballast");
+        var craftedBallast = recipes.getRecipeFor(RecipeType.CRAFTING, crafted, level).orElseThrow().value().assemble(crafted);
+        test.assertTrue(craftedBallast.is(Trainmod.BALLAST.get().asItem()) && craftedBallast.getCount() == 2,
+            "One gravel crafts two ballast");
         var cut = new SingleRecipeInput(gravel);
-        test.assertTrue(recipes.getRecipeFor(RecipeType.STONECUTTING, cut, level).orElseThrow().value()
-            .assemble(cut).is(Trainmod.BALLAST.get().asItem()), "The stonecutter also converts gravel into ballast");
+        var cutBallast = recipes.getRecipeFor(RecipeType.STONECUTTING, cut, level).orElseThrow().value().assemble(cut);
+        test.assertTrue(cutBallast.is(Trainmod.BALLAST.get().asItem()) && cutBallast.getCount() == 2,
+            "The stonecutter also yields two ballast");
 
         var fuel = new VehicleFuel();
         var diesel = new SimpleContainer(9);
@@ -96,6 +102,89 @@ final class RailwayAdditionsGameTest {
         test.assertTrue(level.getBlockState(cell.west()) == retired && !retired.isSignalSource()
             && level.getSignal(cell.west(), Direction.EAST) == 0, "The saved signal state remains inert");
         test.succeed();
+    }
+
+    static void trackManufacturing(GameTestHelper test) {
+        ServerLevel level = test.getLevel();
+        BlockPos pos = test.absolutePos(new BlockPos(0, 42, 0));
+        var state = Trainmod.RAIL_EXTRUDER.get().defaultBlockState();
+        level.setBlockAndUpdate(pos, state);
+        var machine = (RailExtruder.Machine) level.getBlockEntity(pos);
+        var energy = level.getCapability(Capabilities.Energy.BLOCK, pos, Direction.NORTH);
+        var feed = level.getCapability(Capabilities.Item.BLOCK, pos, Direction.UP);
+        var collect = level.getCapability(Capabilities.Item.BLOCK, pos, Direction.DOWN);
+        test.assertTrue(machine != null && energy != null && feed != null && collect != null,
+            "The placed extruder exposes energy, input and output capabilities");
+
+        try (var transaction = Transaction.openRoot()) {
+            test.assertTrue(feed.insert(0, ItemResource.of(Items.COPPER_INGOT), 1, transaction) == 0
+                && collect.insert(0, ItemResource.of(Items.IRON_INGOT), 1, transaction) == 0
+                && feed.insert(0, ItemResource.of(Items.IRON_INGOT), 2, transaction) == 2,
+                "Automation can insert iron ingots into the input slot only");
+            transaction.commit();
+        }
+        machine.process(true);
+        test.assertTrue(machine.getItem(RailExtruder.INPUT).getCount() == 2
+            && machine.getItem(RailExtruder.OUTPUT).isEmpty(), "An empty energy buffer stalls the powered extruder");
+        try (var transaction = Transaction.openRoot()) {
+            test.assertTrue(energy.insert(200, transaction) == 200 && energy.insert(200, transaction) == 200,
+                "External Forge Energy can fill the buffer");
+            transaction.commit();
+        }
+
+        machine.setItem(RailExtruder.OUTPUT, new ItemStack(Trainmod.RAIL.get(), 49));
+        machine.process(true);
+        test.assertTrue(energy.getAmountAsLong() == 400, "A blocked output uses no energy");
+        machine.setItem(RailExtruder.OUTPUT, ItemStack.EMPTY);
+        for (int tick = 0; tick < 20; tick++) machine.process(true);
+        test.assertTrue(energy.getAmountAsLong() == 200 && machine.getItem(RailExtruder.OUTPUT).isEmpty(),
+            "Half of the powered cycle uses 200 FE without producing rails");
+        var saved = output(level);
+        machine.saveAdditional(saved);
+        var restored = new RailExtruder.Machine(pos, state);
+        restored.loadAdditional(input(level, saved));
+        for (int tick = 0; tick < 20; tick++) restored.process(true);
+        var rails = restored.getItem(RailExtruder.OUTPUT);
+        test.assertTrue(rails.is(Trainmod.RAIL.get()) && rails.getCount() == 16
+            && restored.getItem(RailExtruder.INPUT).getCount() == 1, "The saved cycle completes at sixteen rails per ingot");
+        restored.process(true);
+        for (int tick = 0; tick < 39; tick++) restored.process(false);
+        test.assertTrue(rails.getCount() == 16, "The unpowered cycle also takes 40 ticks");
+        restored.process(false);
+        test.assertTrue(rails.getCount() == 32 && restored.getItem(RailExtruder.INPUT).isEmpty(),
+            "Disabling the power requirement lets an empty buffer complete another cycle");
+
+        var recipes = level.getServer().getRecipeManager();
+        var empty = ItemStack.EMPTY;
+        var plank = new ItemStack(Items.BIRCH_PLANKS);
+        var cut = new SingleRecipeInput(plank);
+        var ties = recipes.getRecipeFor(RecipeType.STONECUTTING, cut, level).orElseThrow().value().assemble(cut);
+        test.assertTrue(ties.is(Trainmod.TIE_BUNDLE.get()) && ties.getCount() == 1, "One plank cuts into one four-tie bundle");
+        var diagonal = CraftingInput.of(2, 2, List.of(plank, empty, empty, new ItemStack(Items.SPRUCE_PLANKS)));
+        var craftedTies = recipes.getRecipeFor(RecipeType.CRAFTING, diagonal, level).orElseThrow().value().assemble(diagonal);
+        test.assertTrue(craftedTies.is(Trainmod.TIE_BUNDLE.get()) && craftedTies.getCount() == 2,
+            "Two diagonal planks of any types craft two bundles");
+        var rail = new ItemStack(Trainmod.RAIL.get());
+        var straightInput = CraftingInput.of(3, 3, List.of(rail, empty, rail, empty, ties, empty,
+            empty, new ItemStack(Trainmod.BALLAST.get()), empty));
+        var straight = recipes.getRecipeFor(RecipeType.CRAFTING, straightInput, level).orElseThrow().value().assemble(straightInput);
+        test.assertTrue(straight.is(Trainmod.TRACK_ITEMS.get(TrackGeometry.Kind.STRAIGHT).get()),
+            "Two rails, a tie bundle and ballast make one straight track");
+        var longer = CraftingInput.of(2, 2, List.of(straight, empty, straight, straight));
+        test.assertTrue(recipes.getRecipeFor(RecipeType.CRAFTING, longer, level).orElseThrow().value().assemble(longer)
+            .is(Trainmod.TRACK_ITEMS.get(TrackGeometry.Kind.STRAIGHT_3).get()), "Three individual tracks combine in any shape");
+        test.startSequence()
+            .thenWaitUntil(() -> test.assertTrue(machine.getItem(RailExtruder.OUTPUT).getCount() == 16,
+                "The placed machine completes its cycle through the server ticker"))
+            .thenExecute(() -> {
+                try (var transaction = Transaction.openRoot()) {
+                    var component = ItemResource.of(Trainmod.RAIL.get());
+                    test.assertTrue(collect.extract(0, component, 16, transaction) == 16,
+                        "Automation can collect the finished rails from underneath");
+                    transaction.commit();
+                }
+            })
+            .thenSucceed();
     }
 
     static void steamTenderControls(GameTestHelper test) {
@@ -334,9 +423,13 @@ final class RailwayAdditionsGameTest {
         BlockPos earlierMount = root.south(16).above(CatenaryTower.Kind.GANTRY.height - 1);
         level.removeBlock(root.south(16).above(CatenaryTower.Kind.GANTRY.height), false);
         setTower(level, earlierMount, Trainmod.CATENARY_GANTRY.get(), Direction.NORTH);
+        var lower = Catenary.attachments(level, earlierMount, level.getBlockState(earlierMount)).getFirst();
+        var mixedSpan = Catenary.spansFrom(level, first, 1).getFirst();
         test.assertTrue(Catenary.powered(level, middle)
-            && Catenary.attachments(level, earlierMount, level.getBlockState(earlierMount)).getFirst().height() == middle.point().y + 4,
-            "Existing lower gantry blocks still support the newly raised wire");
+            && lower.height() == middle.point().y + 3
+            && mixedSpan.wire().getFirst().distanceToSqr(first.contact()) < 1e-10
+            && mixedSpan.wire().getLast().distanceToSqr(lower.contact()) < 1e-10,
+            "A mixed-height span stays powered and seats its wire under both gantry mounts");
         level.removeBlock(root.south(5), false);
         test.assertTrue(!Catenary.powered(level, middle), "Missing track breaks the span");
 
@@ -437,6 +530,15 @@ final class RailwayAdditionsGameTest {
         test.assertTrue(slopeWire.getLast().y - slopeWire.getFirst().y > 0.99
             && Catenary.powered(level, new RailNetwork.Position(incline, incline.path().length / 2, 1)),
             "A wire follows the grade between towers at different elevations and powers the train");
+        BlockPos gradeMount = grade.south(5).above(4);
+        gantry(level, grade.south(5));
+        gantry(level, grade.south(8).above());
+        var gradeAnchor = Catenary.attachments(level, gradeMount, level.getBlockState(gradeMount)).getFirst();
+        var gantryWire = Catenary.spansFrom(level, gradeAnchor, 1).getFirst();
+        test.assertTrue(gradeAnchor.height() == gradeMount.getY() + CatenaryTower.GANTRY_CONTACT
+            && gantryWire.wire().getFirst().distanceToSqr(gradeAnchor.contact()) < 1e-10
+            && gantryWire.wire().getLast().distanceToSqr(gantryWire.end().contact()) < 1e-10,
+            "Grade wire meets the insulator below the beam at each gantry");
         test.succeed();
     }
 
@@ -511,6 +613,41 @@ final class RailwayAdditionsGameTest {
             }
         }
         test.assertTrue(level.getBlockState(slope.below(6)).is(Blocks.STONE), "The ballast cascade ends four layers below the track foundation");
+        BlockPos wide = start.offset(10, 0, 0);
+        RailwayGameTests.straight(level, wide, 0);
+        for (int side = -1; side <= 1; side++) {
+            level.setBlockAndUpdate(wide.below().east(side), Blocks.DIRT.defaultBlockState());
+        }
+        driver.setPos(regulator.position());
+        var menu = new BallastRegulatorMenu(1, driver.getInventory(), regulator.cargo, regulator);
+        test.assertTrue(!menu.wide() && menu.clickMenuButton(driver, BallastRegulatorMenu.TOGGLE_WIDTH) && menu.wide(),
+            "The cargo screen toggles the regulator from narrow to wide");
+        regulator.cargo.setItem(0, new ItemStack(Items.GRAVEL, 3));
+        regulator.regulate(level, driver, wide.below());
+        test.assertTrue(regulator.cargo.isEmpty() && level.getBlockState(wide.below()).is(Trainmod.BALLAST.get())
+            && level.getBlockState(wide.below().east()).is(Trainmod.BALLAST.get())
+            && level.getBlockState(wide.below().west()).is(Trainmod.BALLAST.get()),
+            "Wide mode consumes three gravel and fills a three-block-wide layer directly below the rail");
+        BlockPos wideSlope = wide.south(18);
+        RailwayGameTests.straight(level, wideSlope, 0);
+        for (int side = -6; side <= 6; side++) {
+            level.setBlockAndUpdate(wideSlope.below(6).east(side), Blocks.STONE.defaultBlockState());
+        }
+        regulator.cargo.setItem(0, new ItemStack(Items.GRAVEL, 35));
+        regulator.regulate(level, driver, wideSlope.below());
+        test.assertTrue(regulator.cargo.isEmpty(), "Wide mode consumes one block for each of the 35 blocks in the bed");
+        for (int depth = 0; depth <= 4; depth++) {
+            for (int side = -6; side <= 6; side++) {
+                var state = level.getBlockState(wideSlope.below(1 + depth).east(side));
+                test.assertTrue(state.is(Trainmod.BALLAST.get()) == (Math.abs(side) <= depth + 1),
+                    "The wide bed keeps a 45-degree slope from its three-block crest through all four lower layers");
+            }
+        }
+        test.assertTrue(level.getBlockState(wideSlope.below(6)).is(Blocks.STONE), "The wide bed ends at the same depth as narrow");
+        var restored = new TrainVehicle(Trainmod.VEHICLES.get(regulator.kind).get(), level, regulator.kind);
+        restored.readAdditionalSaveData(vehicleData(level, regulator));
+        test.assertTrue(restored.wideBallast(), "The selected ballast width survives a reload");
+        menu.removed(driver);
         regulator.discard();
         test.succeed();
     }
@@ -672,11 +809,73 @@ final class RailwayAdditionsGameTest {
             "A cabin kit places both halves. Result: " + placed + ", item: " + kit + ", lower: "
                 + level.getBlockState(base) + ", upper: " + level.getBlockState(base.above()));
         var bottom = level.getBlockState(base);
+        var roofShape = level.getBlockState(base.above()).getShape(level, base.above());
+        test.assertTrue(roofShape.max(Direction.Axis.Y) > 0.75 && roofShape.min(Direction.Axis.X) < 0
+            && roofShape.max(Direction.Axis.Z) > 1, "The gabled roof rises above the eaves and overhangs the whole cabin");
         test.assertTrue(bottom.getCollisionShape(level, base).toAabbs().stream()
             .noneMatch(box -> box.contains(0.5, 0.5, 0.5)), "The cabin has an empty interior");
         test.useBlock(test.relativePos(base));
         test.assertTrue(level.getBlockState(base).getValue(BlockStateProperties.OPEN)
             && level.getBlockState(base.above()).getValue(BlockStateProperties.OPEN), "The cabin door opens across both halves");
+        test.succeed();
+    }
+
+    static void wideGirder(GameTestHelper test) {
+        ServerLevel level = test.getLevel();
+        var bridge = Trainmod.WIDE_STEEL_GIRDER.get();
+        var player = test.makeMockServerPlayerInLevel();
+        for (Direction.Axis axis : List.of(Direction.Axis.Z, Direction.Axis.X)) {
+            BlockPos center = test.absolutePos(new BlockPos(axis == Direction.Axis.Z ? 0 : 8, 190, 0));
+            Direction along = Direction.get(Direction.AxisDirection.POSITIVE, axis);
+            Direction across = WideGirder.across(axis);
+            BlockPos foundation = center.below();
+            level.setBlockAndUpdate(foundation, Blocks.STONE.defaultBlockState());
+            player.setPos(Vec3.atCenterOf(center.relative(along.getOpposite(), 2)));
+            player.setYRot(axis == Direction.Axis.Z ? 0 : -90);
+            var item = new ItemStack(bridge.asItem());
+            player.setItemInHand(InteractionHand.MAIN_HAND, item);
+            var context = new UseOnContext(player, InteractionHand.MAIN_HAND,
+                new BlockHitResult(Vec3.atCenterOf(foundation), Direction.UP, foundation, false));
+            BlockPos blocked = center.relative(across);
+            level.setBlockAndUpdate(blocked, Blocks.STONE.defaultBlockState());
+            test.assertTrue(item.useOn(context) == net.minecraft.world.InteractionResult.FAIL && level.getBlockState(center).isAir(),
+                "A blocked wing prevents the entire wide section from placing");
+            level.removeBlock(blocked, false);
+            for (Direction side : List.of(across, across.getOpposite())) {
+                level.setBlockAndUpdate(foundation.relative(side), Blocks.STONE.defaultBlockState());
+            }
+            test.assertTrue(item.useOn(context).consumesAction(), "One item places a wide girder section");
+            for (int part = 0; part < 3; part++) {
+                BlockPos cell = center.relative(across, part - WideGirder.CENTER);
+                BlockState state = level.getBlockState(cell);
+                var shape = state.getCollisionShape(level, cell);
+                test.assertTrue(state.is(bridge) && state.getValue(BridgeBlock.AXIS) == axis
+                    && state.getValue(WideGirder.PART) == part && WideGirder.center(cell, state).equals(center)
+                    && Math.abs(shape.max(Direction.Axis.Y) - 1) < 1e-7,
+                    "The center and both wings occupy their own blocks and meet the normal deck height");
+                if (part == WideGirder.CENTER) {
+                    test.assertTrue(shape.min(Direction.Axis.Y) == 0.5, "The deck center is open beneath the crossmembers");
+                } else {
+                    double outer = part == 0 ? 0.125 : 0.875;
+                    Vec3 underGirder = axis == Direction.Axis.Z ? new Vec3(outer, 0.25, 0.5) : new Vec3(0.5, 0.25, outer);
+                    test.assertTrue(shape.toAabbs().stream().anyMatch(box -> box.contains(underGirder)),
+                        "Both wing I-beams sit beneath the outside girders on each axis");
+                }
+            }
+            BlockPos next = center.relative(along);
+            level.removeBlock(foundation, false);
+            test.assertTrue(bridge.canPlace(level, next, axis), "The wide bridge can span from a pier along its centerline");
+            level.setBlockAndUpdate(next, Trainmod.STEEL_GIRDER.get().defaultBlockState().setValue(BridgeBlock.AXIS, axis));
+            test.assertTrue(bridge.canPlace(level, next.relative(along), axis), "Both steel deck widths can share a span");
+            var track = Trainmod.TRACK.get(TrackGeometry.Kind.BRIDGE_STRAIGHT).get();
+            level.setBlockAndUpdate(center.above(), track.segment(axis == Direction.Axis.Z ? 0 : 12, true, 0));
+            test.assertTrue(RailNetwork.railAt(level, center.above()) != null, "Bridge rail is supported on the timber deck");
+            level.removeBlock(center.above(), false);
+            player.gameMode.destroyBlock(blocked);
+            test.assertTrue(level.getBlockState(center).isAir() && level.getBlockState(center.relative(across.getOpposite())).isAir(),
+                "Mining a wing lifts the entire section");
+        }
+        level.getServer().getPlayerList().remove(player);
         test.succeed();
     }
 

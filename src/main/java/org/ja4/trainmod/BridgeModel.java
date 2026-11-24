@@ -45,15 +45,15 @@ final class BridgeModel extends DelegateBlockStateModel {
             return;
         }
         if (bridge.kind == BridgeBlock.Kind.STONE && bridge.column(level, pos)
-            || bridge.kind == BridgeBlock.Kind.GIRDER && bridge.girderColumn(level, pos)) {
+            || bridge.kind.steel() && bridge.girderColumn(level, pos)) {
             models.get("column").collectParts(level, pos, state, random, parts);
             return;
         }
         delegate.collectParts(level, pos, state, random, parts);
+        if (bridge.kind.steel() && bridge.girderFeet(level, pos)) {
+            models.get("foot").collectParts(level, pos, state, random, parts);
+        }
         if (bridge.kind == BridgeBlock.Kind.GIRDER) {
-            if (bridge.girderFeet(level, pos)) {
-                models.get("foot").collectParts(level, pos, state, random, parts);
-            }
             Direction.Axis axis = state.getValue(BridgeBlock.AXIS);
             for (Direction side : Direction.Plane.HORIZONTAL) {
                 if (side.getAxis() != axis && level.getBlockState(pos.relative(side)).is(bridge)) {

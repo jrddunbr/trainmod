@@ -263,7 +263,7 @@ final class TrackGeometry {
         };
     }
 
-    private static int straightBlocks(Kind kind) {
+    static int straightBlocks(Kind kind) {
         return switch (kind) {
             case STRAIGHT_3 -> 3;
             case STRAIGHT_6 -> 6;

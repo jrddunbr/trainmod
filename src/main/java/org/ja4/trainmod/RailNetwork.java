@@ -23,10 +23,18 @@ final class RailNetwork {
         }
 
         Vec3 origin() { return TrackGeometry.origin(root); }
-        Vec3 point(double distance) { return origin().add(path.point(distance)); }
+        Vec3 point(double distance) {
+            double onRail = Math.clamp(distance, 0, path.length);
+            return origin().add(path.point(onRail)).add(path.tangent(onRail).scale(distance - onRail));
+        }
         Vec3 end(boolean end) { return origin().add(path.endpoint(end)); }
         double project(Vec3 position) { return path.project(position.subtract(origin())); }
         boolean open(boolean end) { return end ? endOpen : startOpen; }
+
+        boolean levelStraight() {
+            Vec3 span = path.endpoint(true).subtract(path.endpoint(false));
+            return Math.abs(span.y) < 1e-5 && path.length - span.horizontalDistance() < 1e-5;
+        }
     }
 
     record Position(Rail rail, double distance, int forward) {
@@ -199,21 +207,31 @@ final class RailNetwork {
     }
 
     static Position advance(Level level, Position position, double delta) {
-        int travel = delta >= 0 ? 1 : -1;
-        double remaining = Math.abs(delta);
+        return advance(level, position, delta, false);
+    }
+
+    static Position advanceBore(Level level, Position position, double delta) {
+        return advance(level, position, delta, true);
+    }
+
+    private static Position advance(Level level, Position position, double delta, boolean extendFront) {
+        double distance = position.distance + position.forward * delta;
         for (int transitions = 0; transitions < 64; transitions++) {
-            int direction = position.forward * travel;
-            double distance = position.distance + direction * remaining;
-            if (distance >= 0 && distance <= position.rail.path.length) {
-                return new Position(position.rail, distance, position.forward);
+            Rail rail = position.rail;
+            double length = rail.path.length;
+            if (distance >= -1e-8 && distance <= length + 1e-8) {
+                return new Position(rail, Math.clamp(distance, 0, length), position.forward);
             }
-            boolean end = direction > 0;
-            remaining -= end ? position.rail.path.length - position.distance : position.distance;
-            Position next = next(level, position.rail, end);
+            boolean end = distance > length;
+            boolean front = end == (position.forward > 0);
+            Position next = next(level, rail, end);
             if (next == null) {
-                return null;
+                return extendFront && front && rail.open(end) && rail.levelStraight()
+                    ? new Position(rail, distance, position.forward) : null;
             }
-            position = new Position(next.rail, next.distance, next.forward * travel);
+            double remaining = end ? distance - length : -distance;
+            distance = next.distance + next.forward * remaining;
+            position = new Position(next.rail, next.distance, front ? next.forward : -next.forward);
         }
         return null;
     }

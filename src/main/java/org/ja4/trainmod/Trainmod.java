@@ -6,6 +6,8 @@ import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobCategory;
+import net.minecraft.world.flag.FeatureFlags;
+import net.minecraft.world.inventory.MenuType;
 import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -30,6 +32,7 @@ public final class Trainmod {
     private static final DeferredRegister<net.minecraft.sounds.SoundEvent> SOUNDS =
         DeferredRegister.create(Registries.SOUND_EVENT, ID);
     private static final DeferredRegister<CreativeModeTab> TABS = DeferredRegister.create(Registries.CREATIVE_MODE_TAB, ID);
+    private static final DeferredRegister<MenuType<?>> MENUS = DeferredRegister.create(Registries.MENU, ID);
 
     static final Map<TrackGeometry.Kind, DeferredBlock<TrackBlock>> TRACK = new EnumMap<>(TrackGeometry.Kind.class);
     static final Map<TrackGeometry.Kind, DeferredItem<TrackItem>> TRACK_ITEMS = new EnumMap<>(TrackGeometry.Kind.class);
@@ -44,6 +47,18 @@ public final class Trainmod {
 
     static final DeferredBlock<RailwayBlocks.Ballast> BALLAST =
         BLOCKS.registerBlock("ballast", RailwayBlocks.Ballast::new, p -> p.strength(0.7f).sound(SoundType.GRAVEL).noOcclusion());
+    static final DeferredBlock<RailExtruder> RAIL_EXTRUDER = BLOCKS.registerBlock("rail_extruder", RailExtruder::new,
+        p -> p.strength(3.5f).sound(SoundType.METAL).requiresCorrectToolForDrops());
+    static final DeferredHolder<net.minecraft.world.level.block.entity.BlockEntityType<?>,
+        net.minecraft.world.level.block.entity.BlockEntityType<RailExtruder.Machine>> RAIL_EXTRUDER_ENTITY =
+        BLOCK_ENTITIES.register("rail_extruder", () -> new net.minecraft.world.level.block.entity.BlockEntityType<>(
+            RailExtruder.Machine::new, RAIL_EXTRUDER.get()));
+    static final DeferredHolder<MenuType<?>, MenuType<RailExtruderMenu>> RAIL_EXTRUDER_MENU =
+        MENUS.register("rail_extruder", () -> new MenuType<>(RailExtruderMenu::new, FeatureFlags.DEFAULT_FLAGS));
+    static final DeferredHolder<MenuType<?>, MenuType<BallastRegulatorMenu>> BALLAST_REGULATOR_MENU =
+        MENUS.register("ballast_regulator", () -> new MenuType<>(BallastRegulatorMenu::new, FeatureFlags.DEFAULT_FLAGS));
+    static final DeferredItem<Item> RAIL = ITEMS.registerSimpleItem("rail");
+    static final DeferredItem<Item> TIE_BUNDLE = ITEMS.registerSimpleItem("tie_bundle");
     static final DeferredBlock<RailwayBlocks.Stand> STAND =
         BLOCKS.registerBlock("switch_stand", RailwayBlocks.Stand::new, p -> p.strength(1.5f).noOcclusion().noCollision());
     static final DeferredHolder<net.minecraft.world.level.block.entity.BlockEntityType<?>,
@@ -66,6 +81,9 @@ public final class Trainmod {
         net.minecraft.world.level.block.SoundType.WOOD);
     static final DeferredBlock<BridgeBlock> STEEL_GIRDER = bridge("steel_girder", BridgeBlock.Kind.GIRDER,
         net.minecraft.world.level.block.SoundType.METAL);
+    static final DeferredBlock<WideGirder> WIDE_STEEL_GIRDER = BLOCKS.registerBlock("wide_steel_girder", WideGirder::new,
+        p -> p.strength(2.5f).sound(SoundType.METAL).noOcclusion().dynamicShape()
+            .pushReaction(net.minecraft.world.level.material.PushReaction.IMMOVEABLE));
     static final DeferredBlock<BridgeBlock> STONE_ARCH = bridge("stone_arch", BridgeBlock.Kind.STONE,
         net.minecraft.world.level.block.SoundType.STONE);
     static final DeferredBlock<CatenaryTower> CATENARY_SINGLE = tower("catenary_single", CatenaryTower.Kind.SINGLE);
@@ -111,11 +129,15 @@ public final class Trainmod {
 
     static {
         ITEMS.registerSimpleBlockItem(BALLAST);
+        ITEMS.registerSimpleBlockItem(RAIL_EXTRUDER);
+        ITEMS.registerItem("wide_steel_girder", p -> new WideGirder.Kit(WIDE_STEEL_GIRDER.get(), p.useBlockDescriptionPrefix()));
         ITEMS.registerSimpleBlockItem(STAND);
         var retiredSignal = ITEMS.registerSimpleBlockItem(SIGNAL);
+        var retiredTrestle = ITEMS.registerSimpleBlockItem(WOOD_TRESTLE);
+        var retiredStoneArch = ITEMS.registerSimpleBlockItem(STONE_ARCH);
         ITEMS.registerItem("signal_cabin", p -> new net.minecraft.world.item.DoubleHighBlockItem(SIGNAL_CABIN.get(),
             p.useBlockDescriptionPrefix()));
-        for (var block : java.util.List.of(WOOD_TRESTLE, STEEL_GIRDER, STONE_ARCH, CATENARY_SINGLE, CATENARY_DOUBLE, CATENARY_GANTRY)) {
+        for (var block : java.util.List.of(STEEL_GIRDER, CATENARY_SINGLE, CATENARY_DOUBLE, CATENARY_GANTRY)) {
             ITEMS.registerSimpleBlockItem(block);
         }
         for (TrackGeometry.Kind kind : TrackGeometry.Kind.values()) {
@@ -140,6 +162,7 @@ public final class Trainmod {
             .title(Component.translatable("itemGroup.trainmod.railway"))
             .icon(() -> new ItemStack(VEHICLE_ITEMS.get(TrainVehicle.Kind.LOCOMOTIVE).get()))
             .displayItems((parameters, output) -> ITEMS.getEntries().stream().filter(item -> item != BUILDER && item != retiredSignal
+                && item != retiredTrestle && item != retiredStoneArch
                 && (item != DIESEL_BUCKET || parameters.holders().lookupOrThrow(Registries.ITEM)
                     .get(VehicleFuel.EXTERNAL_DIESEL)
                     .map(net.minecraft.core.HolderSet::size).orElse(0) == 0)).forEach(item -> output.accept(item.get())))
@@ -148,13 +171,16 @@ public final class Trainmod {
 
     public Trainmod(IEventBus bus, ModContainer mod) {
         mod.registerConfig(ModConfig.Type.CLIENT, ClientConfig.SPEC);
+        mod.registerConfig(ModConfig.Type.SYNCED, ServerConfig.SPEC);
         bus.addListener(TrainControls::register);
         bus.addListener(BoreTickets::register);
+        bus.addListener(RailExtruder::registerCapabilities);
         SOUNDS.register(bus);
         BLOCKS.register(bus);
         ITEMS.register(bus);
         ENTITIES.register(bus);
         BLOCK_ENTITIES.register(bus);
+        MENUS.register(bus);
         var recipes = DeferredRegister.create(Registries.RECIPE_SERIALIZER, ID);
         recipes.register("diesel", () -> DieselRecipe.SERIALIZER);
         recipes.register(bus);
