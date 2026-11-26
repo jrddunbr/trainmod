@@ -1,7 +1,10 @@
 package org.ja4.trainmod;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.BaseRailBlock;
@@ -11,6 +14,7 @@ import net.minecraft.world.phys.Vec3;
 final class TrackEnds {
     private static final double PROBE = 0.04;
     private static final double MATCH_DISTANCE_SQR = 0.0001;
+    private static final Map<TrackGeometry.Shape, Map<BlockPos, List<Section>>> SECTIONS = new ConcurrentHashMap<>();
 
     enum Connection { OPEN, RAIL, BRIDGE }
 
@@ -18,7 +22,33 @@ final class TrackEnds {
         BlockPos landing() { return BlockPos.containing(center.add(outward.scale(PROBE)).add(0, 0.1, 0)); }
     }
 
+    record Section(int route, double start, double end, int previous, int next) {}
+
     private TrackEnds() {}
+
+    static List<Section> sections(TrackGeometry.Shape shape, BlockPos cell) {
+        return SECTIONS.computeIfAbsent(shape, TrackEnds::sections).getOrDefault(cell, List.of());
+    }
+
+    private static Map<BlockPos, List<Section>> sections(TrackGeometry.Shape shape) {
+        var result = new HashMap<BlockPos, List<Section>>();
+        for (int route = 0; route < shape.routes().size(); route++) {
+            var path = shape.routes().get(route);
+            var spans = path.columns();
+            var owners = spans.stream().map(span -> shape.cells().indexOf(
+                shape.owner(path.point((span.start() + span.end()) / 2)))).toList();
+            for (int i = 0; i < spans.size(); ) {
+                int owner = owners.get(i);
+                int last = i;
+                while (last + 1 < spans.size() && owners.get(last + 1) == owner) last++;
+                var section = new Section(route, spans.get(i).start(), spans.get(last).end(),
+                    i == 0 ? -1 : owners.get(i - 1), last == spans.size() - 1 ? -1 : owners.get(last + 1));
+                result.computeIfAbsent(shape.cells().get(owner), ignored -> new ArrayList<>()).add(section);
+                i = last + 1;
+            }
+        }
+        return result;
+    }
 
     static List<Port> ports(TrackGeometry.Shape shape, BlockPos cell) {
         var ports = new ArrayList<Port>();
@@ -53,7 +83,7 @@ final class TrackEnds {
                 if (other.equals(root)) continue;
                 for (var path : shape.routes()) {
                     if (joins(path, Vec3.atBottomCenterOf(other), port)) {
-                        return track.kind.hasBallast() ? Connection.RAIL : Connection.BRIDGE;
+                        return TrackBlock.ballasted(state) ? Connection.RAIL : Connection.BRIDGE;
                     }
                 }
             } else if (BaseRailBlock.isRail(state)) {

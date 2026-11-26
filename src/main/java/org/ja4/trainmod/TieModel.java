@@ -36,12 +36,14 @@ final class TieModel extends DelegateBlockStateModel {
     @Override
     public void collectParts(BlockAndTintGetter level, BlockPos pos, BlockState state, RandomSource random,
                              List<BlockStateModelPart> parts) {
+        int first = parts.size();
         select(pos).collectParts(level, pos, state, random, parts);
+        BentTrackModel.deformParts(state, parts, first, false);
     }
 
     @Override
     public Object createGeometryKey(BlockAndTintGetter level, BlockPos pos, BlockState state, RandomSource random) {
-        return select(pos).createGeometryKey(level, pos, state, random);
+        return TrackBlock.broken(state) ? null : select(pos).createGeometryKey(level, pos, state, random);
     }
 
     private record Unbaked(List<List<SingleVariant.Unbaked>> patterns) implements CustomUnbakedBlockStateModel {

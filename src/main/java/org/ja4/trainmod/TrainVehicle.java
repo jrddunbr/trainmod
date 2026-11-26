@@ -201,6 +201,7 @@ final class TrainVehicle extends VehicleEntity {
     private int boardingKeyGrace;
     private boolean working;
     private BallastMode ballastMode = BallastMode.NARROW;
+    private int ballastRemainder;
     private boolean previousJump;
     private long boardingOrder;
     private long lastAudioTick = Long.MIN_VALUE;
@@ -474,8 +475,7 @@ final class TrainVehicle extends VehicleEntity {
             message(player, set ? "brake_set" : "brake_released");
         } else if (kind == Kind.BALLAST_CAR) {
             if (secondary) {
-                working = !working;
-                message(player, working ? "ballast_on" : "ballast_off");
+                toggleBallastWork(player);
             } else {
                 player.openMenu(new SimpleMenuProvider((id, inv, ignored) -> new BallastRegulatorMenu(id, inv, cargo, this),
                     getDisplayName()));
@@ -889,22 +889,58 @@ final class TrainVehicle extends VehicleEntity {
                 return false;
             }
         }
+        if (wearTrack(level, driver, consist, current, travel)) {
+            stop(driver, "broken_track");
+            return false;
+        }
         for (int i = 0; i < consist.size(); i++) {
             TrainVehicle vehicle = consist.get(i).vehicle;
             RailNetwork.Position next = targets.get(i);
+            var before = vehicle.kind == Kind.BALLAST_CAR && vehicle.working ? vehicle.cursor() : null;
             vehicle.moveToRail(next);
             vehicle.lastMoveTick = level.getGameTime();
             vehicle.lastMoveLeader = getUUID();
             double movement = travel * consist.get(i).movement;
             if (vehicle.kind == Kind.STEAM_LOCOMOTIVE) vehicle.turnWheels(level, movement, steaming.contains(vehicle));
             if (vehicle.kind == Kind.LOCOMOTIVE) vehicle.entityData.set(HEADLIGHT, (int) Math.signum(movement));
-            if (driver != null && vehicle.kind == Kind.BALLAST_CAR && vehicle.working) {
-                BlockPos track = next.trackCell();
-                if (track != null) vehicle.regulate(level, driver, track.below());
+            if (before != null) {
+                var operator = driver != null ? driver : net.neoforged.neoforge.common.util.FakePlayerFactory.getMinecraft(level);
+                Set<BlockPos> worked = new HashSet<>();
+                BlockPos track = before.trackCell();
+                if (track != null && worked.add(track)) vehicle.regulate(level, operator, track.below());
+                RailNetwork.crossesNewCell(level, before, movement, cell -> {
+                    if (worked.add(cell)) vehicle.regulate(level, operator, cell.below());
+                    return false;
+                });
+                track = next.trackCell();
+                if (track != null && worked.add(track)) vehicle.regulate(level, operator, track.below());
             }
         }
         if (reachedEnd) stop(driver, endMessage);
         return true;
+    }
+
+    private boolean wearTrack(ServerLevel level, ServerPlayer driver, List<Member> consist,
+                              RailNetwork.Position current, double travel) {
+        if (consist.stream().anyMatch(member -> member.vehicle.kind == Kind.BALLAST_CAR
+            && member.vehicle.working && member.vehicle.ballastPortions() > 0)) return false;
+        // Roll once when the leading wheel enters a new track block, regardless of the number of cars.
+        int leading = 0;
+        for (int i = 1; i < consist.size(); i++) {
+            Member member = consist.get(i);
+            int leadingEnd = travel * consist.get(leading).movement > 0 ? 0 : 1;
+            if (member.parent == leading && member.parentEnd == leadingEnd) leading = i;
+        }
+        Member first = consist.get(leading);
+        double movement = travel * first.movement;
+        var center = leading == 0 ? current : first.vehicle.cursor();
+        if (center == null) return false;
+        Kind stock = first.vehicle.kind;
+        double axle = movement > 0 ? VehicleModels.frontAxle(stock) : VehicleModels.rearAxle(stock);
+        var wheel = RailNetwork.advance(level, center, axle);
+        return wheel != null && RailNetwork.crossesNewCell(level, wheel, movement, cell ->
+            TrackBlock.unballasted(level.getBlockState(cell)) && random.nextFloat() < 0.05f
+                && TrackWork.damage(level, driver, cell));
     }
 
     private List<RailNetwork.Position> travelPositions(ServerLevel level, List<Member> consist,
@@ -945,19 +981,33 @@ final class TrainVehicle extends VehicleEntity {
 
     BallastMode ballastMode() { return ballastMode; }
 
+    boolean ballastWorking() { return working; }
+
+    void toggleBallastWork(Player player) {
+        working = !working;
+        message(player, working ? "ballast_on" : "ballast_off");
+    }
+
+    int ballastRemainder() { return ballastRemainder; }
+
     void cycleBallastMode() { ballastMode = ballastMode.next(); }
 
+    private int ballastPortions() {
+        return ballastRemainder + TrackWork.BALLAST_PORTIONS * cargo.getItems().stream()
+            .filter(TrainVehicle::ballastSupply).mapToInt(ItemStack::getCount).sum();
+    }
+
     void regulate(ServerLevel level, ServerPlayer driver, BlockPos under) {
-        int available = cargo.getItems().stream().filter(TrainVehicle::ballastSupply).mapToInt(ItemStack::getCount).sum();
+        int available = ballastPortions();
         if (available == 0) return;
-        boolean trackOnly = ballastMode == BallastMode.TRACK_ONLY;
-        int used = TrackWork.ballast(level, driver, under, available, trackOnly);
-        if (!trackOnly) used += TrackWork.cascadeBallast(level, driver, under, ballastMode == BallastMode.WIDE, available - used);
+        int used = TrackWork.ballast(level, driver, under, available, ballastMode);
         if (used == 0) return;
-        for (int slot = 0; used > 0 && slot < cargo.getContainerSize(); slot++) {
-            if (ballastSupply(cargo.getItem(slot))) used -= cargo.removeItem(slot, used).getCount();
+        int blocks = Math.ceilDiv(used - ballastRemainder, TrackWork.BALLAST_PORTIONS);
+        ballastRemainder += blocks * TrackWork.BALLAST_PORTIONS - used;
+        for (int slot = 0; blocks > 0 && slot < cargo.getContainerSize(); slot++) {
+            if (ballastSupply(cargo.getItem(slot))) blocks -= cargo.removeItem(slot, blocks).getCount();
         }
-        var soundPos = trackOnly ? under.above() : under;
+        var soundPos = used < TrackWork.BALLAST_PORTIONS ? under.above() : under;
         var sound = Trainmod.BALLAST.get().defaultBlockState().getSoundType(level, soundPos, driver);
         level.playSound(null, soundPos, sound.getPlaceSound(), net.minecraft.sounds.SoundSource.BLOCKS,
             (sound.getVolume() + 1) / 2, sound.getPitch() * 0.8f);
@@ -1444,6 +1494,7 @@ final class TrainVehicle extends VehicleEntity {
         if (kind == Kind.BALLAST_CAR) {
             int legacyMode = input.getBooleanOr("WideBallast", false) ? BallastMode.WIDE.ordinal() : BallastMode.NARROW.ordinal();
             ballastMode = BallastMode.byId(input.getIntOr("BallastMode", legacyMode));
+            ballastRemainder = Math.clamp(input.getIntOr("BallastRemainder", 0), 0, TrackWork.BALLAST_PORTIONS - 1);
         }
         fuel.load(input);
         entityData.set(HANDBRAKE, input.getBooleanOr("Handbrake", false));
@@ -1469,7 +1520,10 @@ final class TrainVehicle extends VehicleEntity {
             output.store("Rear", UUIDUtil.CODEC, links[1]);
         }
         output.putBoolean("Working", working);
-        if (kind == Kind.BALLAST_CAR) output.putInt("BallastMode", ballastMode.ordinal());
+        if (kind == Kind.BALLAST_CAR) {
+            output.putInt("BallastMode", ballastMode.ordinal());
+            output.putInt("BallastRemainder", ballastRemainder);
+        }
         fuel.save(output);
         output.putBoolean("Handbrake", handbrakeApplied());
         if (kind == Kind.BOXCAR) output.putInt("Doors", entityData.get(DOORS));

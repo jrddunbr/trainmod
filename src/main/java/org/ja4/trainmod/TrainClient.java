@@ -2,9 +2,11 @@ package org.ja4.trainmod;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.math.Axis;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Predicate;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.model.geom.ModelPart;
@@ -106,7 +108,8 @@ public final class TrainClient {
                 SectionPos.blockToSectionCoord(pos.getZ() + 16));
         }
         boolean ballast = oldState.is(Trainmod.BALLAST.get()) || newState.is(Trainmod.BALLAST.get());
-        if (!ballast && BallastSurface.covered(oldState) == BallastSurface.covered(newState)) return;
+        if (!ballast && BallastSurface.covered(oldState) == BallastSurface.covered(newState)
+            && TrackBlock.broken(oldState) == TrackBlock.broken(newState)) return;
         // A ballast gap can straddle a section boundary even when neither block is on the boundary.
         int radius = BallastProfile.SEARCH_DISTANCE;
         extractor.setSectionRangeDirty(SectionPos.blockToSectionCoord(pos.getX() - radius),
@@ -124,7 +127,7 @@ public final class TrainClient {
     @SubscribeEvent
     static void registerRenderers(EntityRenderersEvent.RegisterRenderers event) {
         Trainmod.VEHICLES.forEach((kind, type) ->
-            event.registerEntityRenderer(type.get(), context -> new VehicleRenderer<>(context, VehicleModels.forKind(kind), kind)));
+            event.registerEntityRenderer(type.get(), context -> new VehicleRenderer<>(context, VehicleModels.withBrakeMount(kind), kind)));
         event.registerEntityRenderer(Trainmod.MOUNTED_BUFFER.get(),
             context -> new VehicleRenderer<>(context, VehicleModels.buffer(), null));
         event.registerBlockEntityRenderer(Trainmod.SWITCH_POINTS.get(), context -> new SwitchPointRenderer());
@@ -165,7 +168,9 @@ public final class TrainClient {
         AdjacentBallastModel.register(event);
         BankedCurveModel.register(event);
         RailEndModel.register(event);
+        BentTrackModel.register(event);
         TieModel.register(event);
+        TrackRenderModel.register(event);
         BridgeModel.register(event);
     }
 
@@ -234,35 +239,42 @@ public final class TrainClient {
         final Vec3[] couplerVectors = new Vec3[2];
     }
 
-    static Map<Integer, CubeListBuilder> coloredCubes(List<VehicleModels.Box> boxes) {
-        Map<Integer, CubeListBuilder> meshes = new LinkedHashMap<>();
-        for (var face : VehicleModels.visibleFaces(boxes)) {
-            var box = face.bounds();
-            meshes.computeIfAbsent(box.color(), color -> CubeListBuilder.create()).texOffs(0, 0)
-                .addBox(box.x(), box.y(), box.z(), box.width(), box.height(), box.length(), java.util.Set.of(face.direction()));
-        }
-        return meshes;
+    static Map<Integer, ModelPart> bakeColoredCubes(List<VehicleModels.Box> boxes) {
+        return bakeColoredCubes(boxes, 128, 128);
     }
 
-    static Map<Integer, ModelPart> bakeColoredCubes(List<VehicleModels.Box> boxes) {
-        var colors = coloredCubes(boxes);
-        var mesh = new MeshDefinition();
-        colors.forEach((color, cubes) -> mesh.getRoot().addOrReplaceChild(color.toString(), cubes, PartPose.ZERO));
-        var baked = LayerDefinition.create(mesh, 128, 128).bakeRoot();
+    private static Map<Integer, ModelPart> bakeColoredCubes(List<VehicleModels.Box> boxes, int textureWidth, int textureHeight) {
+        Map<Integer, List<ModelPart.Cube>> meshes = new LinkedHashMap<>();
+        for (var face : VehicleModels.visibleFaces(boxes)) {
+            var box = face.bounds();
+            var cube = new ModelPart.Cube(0, 0, box.x(), box.y(), box.z(), box.width(), box.height(), box.length(),
+                0, 0, 0, false, textureWidth, textureHeight, Set.of(face.direction()));
+            if (face.panel() != null) {
+                var region = VehiclePaint.REGIONS.get(VehiclePaint.Pattern.of(face.source()));
+                var vertices = cube.polygons[0].vertices();
+                for (int i = 0; i < vertices.length; i++) {
+                    var vertex = vertices[i];
+                    float u = region.u(face.panelU(vertex.x(), vertex.z()));
+                    float v = region.v(face.panelV(vertex.y(), vertex.z()));
+                    vertices[i] = vertex.remap(u, v);
+                }
+            }
+            meshes.computeIfAbsent(box.color(), color -> new ArrayList<>()).add(cube);
+        }
         Map<Integer, ModelPart> parts = new LinkedHashMap<>();
-        colors.keySet().forEach(color -> parts.put(color, baked.getChild(color.toString())));
+        meshes.forEach((color, cubes) -> parts.put(color, new ModelPart(cubes, Map.of())));
         return parts;
     }
 
     private static final class VehicleRenderer<T extends Entity> extends EntityRenderer<T, VehicleState> {
         private static final RenderType MATERIAL = RenderTypes.entityCutout(
-            Identifier.fromNamespaceAndPath(Trainmod.ID, "textures/entity/paint.png"));
+            Identifier.fromNamespaceAndPath(Trainmod.ID, "textures/entity/vehicle_paint.png"));
         private static final RenderType GRAVEL = RenderTypes.entityCutout(Identifier.withDefaultNamespace("textures/block/gravel.png"));
-        private final Map<Integer, ModelPart> groups = new LinkedHashMap<>();
+        private final Map<Integer, ModelPart> groups;
         private final List<Map<Integer, ModelPart>> railLoads;
         private final Map<Integer, ModelPart> leftDoor;
         private final Map<Integer, ModelPart> rightDoor;
-        private final Map<Integer, ModelPart> brakeCenter;
+        private final Map<Integer, ModelPart> brakeWheel;
         private final double brakeX;
         private final float brakeY;
         private final float doorTravel;
@@ -278,40 +290,41 @@ public final class TrainClient {
         VehicleRenderer(EntityRendererProvider.Context context, List<VehicleModels.Box> boxes, TrainVehicle.Kind kind) {
             super(context);
             shadowRadius = 0.9f;
-            var meshes = coloredCubes(boxes);
+            groups = bakeVehicleCubes(boxes);
             MeshDefinition model = new MeshDefinition();
-            meshes.forEach((color, cubes) -> model.getRoot().addOrReplaceChild(color.toString(), cubes, PartPose.ZERO));
             model.getRoot().addOrReplaceChild("drawbar", CubeListBuilder.create().texOffs(0, 0)
                 .addBox(-1, -0.58f, -0.04f, 2, 1.16f, 16.08f), PartPose.ZERO);
-            ModelPart root = LayerDefinition.create(model, 128, 128).bakeRoot();
-            drawbar = root.getChild("drawbar");
-            meshes.keySet().forEach(color -> groups.put(color, root.getChild(color.toString())));
+            drawbar = LayerDefinition.create(model, VehiclePaint.ATLAS_WIDTH, VehiclePaint.ATLAS_HEIGHT).bakeRoot().getChild("drawbar");
             railLoads = kind != null && kind.showsLoad()
-                ? java.util.stream.IntStream.rangeClosed(1, 4).mapToObj(layers -> bakeColoredCubes(VehicleModels.railCargo(kind, layers))).toList()
+                ? java.util.stream.IntStream.rangeClosed(1, 4).mapToObj(layers -> bakeVehicleCubes(VehicleModels.railCargo(kind, layers))).toList()
                 : List.of();
-            leftDoor = kind == TrainVehicle.Kind.BOXCAR ? bakeColoredCubes(VehicleModels.doors(kind, true)) : Map.of();
-            rightDoor = kind == TrainVehicle.Kind.BOXCAR ? bakeColoredCubes(VehicleModels.doors(kind, false)) : Map.of();
-            brakeCenter = kind != null && !kind.powered ? bakeColoredCubes(VehicleModels.brakeCenter(kind)) : Map.of();
+            leftDoor = kind == TrainVehicle.Kind.BOXCAR ? bakeVehicleCubes(VehicleModels.doors(kind, true)) : Map.of();
+            rightDoor = kind == TrainVehicle.Kind.BOXCAR ? bakeVehicleCubes(VehicleModels.doors(kind, false)) : Map.of();
+            brakeWheel = kind != null && !kind.powered ? bakeVehicleCubes(VehicleModels.brakeWheel(kind)) : Map.of();
             brakeX = kind != null ? kind.brakeWheelOffset() : 0;
             brakeY = kind != null ? kind.brakeWheelHeight() / 16 : 0;
             doorTravel = kind == TrainVehicle.Kind.BOXCAR ? VehicleModels.OPEN_DOOR_SHIFT * kind.length / 40 : 0;
             gravel = kind == TrainVehicle.Kind.GONDOLA || kind == TrainVehicle.Kind.BALLAST_CAR ? gravel(kind) : null;
             wheels = kind == TrainVehicle.Kind.STEAM_LOCOMOTIVE ? VehicleModels.steamWheels(kind) : List.of();
-            boreRoadGear = kind == TrainVehicle.Kind.TUNNEL_BORE ? bakeColoredCubes(VehicleModels.boreRoadGear()) : Map.of();
-            wheelParts = wheels.stream().map(wheel -> bakeColoredCubes(wheel.boxes())).toList();
-            rods = wheels.isEmpty() ? Map.of() : bakeColoredCubes(VehicleModels.steamRods(kind));
-            piston = wheels.isEmpty() ? null : bakeColoredCubes(List.of(
+            boreRoadGear = kind == TrainVehicle.Kind.TUNNEL_BORE ? bakeVehicleCubes(VehicleModels.boreRoadGear()) : Map.of();
+            wheelParts = wheels.stream().map(wheel -> bakeVehicleCubes(wheel.boxes())).toList();
+            rods = wheels.isEmpty() ? Map.of() : bakeVehicleCubes(VehicleModels.steamRods(kind));
+            piston = wheels.isEmpty() ? null : bakeVehicleCubes(List.of(
                 new VehicleModels.Box(0xa9a7a1, -0.31f, -0.34f, 0, 0.62f, 0.68f, 16))).get(0xa9a7a1);
             lights = kind == TrainVehicle.Kind.LOCOMOTIVE
-                ? List.of(bakeColoredCubes(VehicleModels.headlight(kind, -1, false)),
-                    bakeColoredCubes(VehicleModels.headlight(kind, 1, false)),
-                    bakeColoredCubes(VehicleModels.headlight(kind, -1, true)),
-                    bakeColoredCubes(VehicleModels.headlight(kind, 1, true))) : List.of();
+                ? List.of(bakeVehicleCubes(VehicleModels.headlight(kind, -1, false)),
+                    bakeVehicleCubes(VehicleModels.headlight(kind, 1, false)),
+                    bakeVehicleCubes(VehicleModels.headlight(kind, -1, true)),
+                    bakeVehicleCubes(VehicleModels.headlight(kind, 1, true))) : List.of();
+        }
+
+        private static Map<Integer, ModelPart> bakeVehicleCubes(List<VehicleModels.Box> boxes) {
+            return bakeColoredCubes(boxes, VehiclePaint.ATLAS_WIDTH, VehiclePaint.ATLAS_HEIGHT);
         }
 
         private static ModelPart gravel(TrainVehicle.Kind kind) {
-            float halfWidth = kind.width * 6.925f;
-            float halfLength = kind.length * 6.82f;
+            float halfWidth = VehicleModels.GONDOLA_FLOOR_HALF_WIDTH * kind.width / 2 - 0.04f;
+            float halfLength = VehicleModels.GONDOLA_FLOOR_HALF_LENGTH * kind.length / 2.5f - 0.04f;
             var mesh = new MeshDefinition();
             mesh.getRoot().addOrReplaceChild("gravel", CubeListBuilder.create().texOffs(0, 0)
                 .addBox(-halfWidth, 0, -halfLength, 2 * halfWidth, 5.38f, 2 * halfLength), PartPose.ZERO);
@@ -400,11 +413,11 @@ public final class TrainClient {
             }
             submitDoor(leftDoor, state.leftDoorProgress, state, pose, collector);
             submitDoor(rightDoor, state.rightDoorProgress, state, pose, collector);
-            if (!brakeCenter.isEmpty()) {
+            if (!brakeWheel.isEmpty()) {
                 pose.pushPose();
                 pose.translate(brakeX, brakeY, 0);
                 pose.rotateDegrees(Axis.ZP, state.handbrakeAngle);
-                submitParts(brakeCenter, state, pose, collector);
+                submitParts(brakeWheel, state, pose, collector);
                 pose.popPose();
             }
             pose.popPose();

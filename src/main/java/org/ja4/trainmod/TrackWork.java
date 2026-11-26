@@ -10,6 +10,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.vehicle.minecart.AbstractMinecart;
@@ -30,6 +31,7 @@ import org.jspecify.annotations.Nullable;
 final class TrackWork {
     private static final int RAILS_PER_BLOCK = 2;
     private static final int BALLAST_DEPTH = 4;
+    static final int BALLAST_PORTIONS = 8;
 
     private TrackWork() {}
 
@@ -65,6 +67,8 @@ final class TrackWork {
             end = position.forward() > 0;
             double distance = end ? rail.path().length - position.distance() : position.distance();
             Vec3 exit = rail.path().tangent(end ? rail.path().length : 0).scale(position.forward());
+            double lookAhead = position.distance() + position.forward() * Math.min(remaining, distance);
+            if (rail.blocks(position.distance(), lookAhead)) return new Issue("buffer_reached");
             if (distance > remaining) return null;
             remaining -= distance;
             RailNetwork.Position connected = RailNetwork.next(level, rail, end);
@@ -78,10 +82,10 @@ final class TrackWork {
         }
         BlockPos next = BlockPos.containing(rail.end(end).add(facing.scale(0.15)));
         if (!level.isLoaded(next)) return at("bore_unloaded", next);
-        if (RailNetwork.isRail(level.getBlockState(next))) return at("bore_misaligned", next);
-        if (level.getBlockState(next).is(Trainmod.BUFFER_STOP.get())) {
+        if (TrackBlock.broken(level.getBlockState(next)) || level.getBlockState(next).is(Trainmod.BUFFER_STOP.get())) {
             return new Issue("buffer_reached");
         }
+        if (RailNetwork.isRail(level.getBlockState(next))) return at("bore_misaligned", next);
         double spacing = diagonal ? Math.sqrt(2) : 1;
         int faces = 1 + (int) Math.floor(remaining / spacing);
         // Feed the rail at the middle of the machine, behind the cutting head.
@@ -132,8 +136,8 @@ final class TrackWork {
             if (old == entry.getValue() || old.isAir() || old.liquid()) {
                 continue;
             }
+            if (TrackBlock.broken(old) || old.is(Trainmod.BUFFER_STOP.get())) return new Issue("buffer_reached");
             if (RailNetwork.isRail(old)) return at("bore_track_in_cut", cell);
-            if (old.is(Trainmod.BUFFER_STOP.get())) return new Issue("buffer_reached");
             if (old.hasBlockEntity()) return at("bore_block_entity", cell, old.getBlock().getName());
             if (old.getDestroySpeed(level, cell) < 0) return at("bore_unbreakable", cell, old.getBlock().getName());
             if (NeoForge.EVENT_BUS.post(new BreakBlockEvent(level, cell, old, driver)).isCanceled()) {
@@ -200,50 +204,54 @@ final class TrackWork {
             center.offset(-2 * dx, 0, 0), center.offset(0, 0, -2 * dz));
     }
 
-    static int ballast(ServerLevel level, ServerPlayer driver, BlockPos below, int available, boolean trackOnly) {
+    static boolean mayBreak(ServerLevel level, ServerPlayer actor, BlockPos pos, BlockState state) {
+        return level.mayInteract(actor, pos) && !actor.blockActionRestricted(level, pos, actor.gameMode())
+            && !NeoForge.EVENT_BUS.post(new BreakBlockEvent(level, pos, state, actor)).isCanceled();
+    }
+
+    static boolean damage(ServerLevel level, @Nullable ServerPlayer driver, BlockPos pos) {
+        BlockState state = level.getBlockState(pos);
+        if (!TrackBlock.unballasted(state)) return false;
+        var actor = driver != null ? driver : net.neoforged.neoforge.common.util.FakePlayerFactory.getMinecraft(level);
+        if (!mayBreak(level, actor, pos, state)) return false;
+        if (!level.setBlockAndUpdate(pos, state.setValue(TrackBlock.CONDITION, TrackBlock.Condition.BROKEN))) return false;
+        level.levelEvent(2001, pos, Block.getId(state));
+        return true;
+    }
+
+    static int ballast(ServerLevel level, ServerPlayer driver, BlockPos below, int portions, TrainVehicle.BallastMode mode) {
         BlockPos above = below.above();
         BlockState state = level.getBlockState(above);
-        if (available == 0 || !(state.getBlock() instanceof TrackBlock track)) return 0;
-        boolean unballasted = track.kind == TrackGeometry.Kind.UNBALLASTED_STRAIGHT;
-        if (!unballasted && (trackOnly || !track.kind.hasBallast())) return 0;
+        if (portions == 0 || !(state.getBlock() instanceof TrackBlock track) || TrackBlock.broken(state)
+            || track.kind == TrackGeometry.Kind.BRIDGE_STRAIGHT) return 0;
         RailNetwork.Rail rail = RailNetwork.railAt(level, above);
         if (rail == null) return 0;
+        int used = 0;
+        if (TrackBlock.unballasted(state)) {
+            if (!level.mayInteract(driver, above)) return 0;
+            BlockState finished = track.kind == TrackGeometry.Kind.UNBALLASTED_STRAIGHT
+                ? Trainmod.TRACK.get(TrackGeometry.Kind.STRAIGHT).get().segment(
+                    state.getValue(TrackBlock.ROTATION), state.getValue(TrackBlock.HAND) == ChestType.LEFT, 0)
+                : state.setValue(TrackBlock.CONDITION, TrackBlock.Condition.BALLASTED);
+            if (!apply(level, driver, Map.of(above, finished), level.getBlockState(below))) return 0;
+            used++;
+        }
+        int blocks = (portions - used) / BALLAST_PORTIONS;
+        if (mode == TrainVehicle.BallastMode.TRACK_ONLY || blocks == 0) return used;
         Vec3 tangent = rail.path().tangent(rail.project(TrackGeometry.origin(above)));
         int heading = RailwayBlocks.Ballast.heading((float) Math.toDegrees(Math.atan2(-tangent.x, tangent.z)));
         BlockState ballast = Trainmod.BALLAST.get().defaultBlockState().setValue(TrackBlock.ROTATION, heading);
-        if (!unballasted) return replaceRoadbed(level, driver, below, ballast) ? 1 : 0;
-
-        boolean needsRoadbed = !trackOnly && !level.getBlockState(below).is(Trainmod.BALLAST.get());
-        int used = needsRoadbed ? 2 : 1;
-        if (available < used || !level.mayInteract(driver, above)
-            || needsRoadbed && !canReplaceRoadbed(level, driver, below)) return 0;
-        var changes = new LinkedHashMap<BlockPos, BlockState>();
-        if (needsRoadbed) changes.put(below, ballast);
-        changes.put(above, Trainmod.TRACK.get(TrackGeometry.Kind.STRAIGHT).get().segment(
-            state.getValue(TrackBlock.ROTATION), state.getValue(TrackBlock.HAND) == ChestType.LEFT, 0));
-        BlockState support = level.getBlockState(needsRoadbed ? below.below() : below);
-        return apply(level, driver, changes, support) ? used : 0;
-    }
-
-    private static int widenCrest(ServerLevel level, ServerPlayer driver, BlockPos below, BlockState material,
-                                  int dx, int dz, Set<BlockPos> reached, int limit) {
-        int used = 0;
-        for (int sign : new int[]{-1, 1}) {
-            BlockPos shoulder = below.offset(sign * dx, 0, sign * dz);
-            if (used < limit && reached.contains(shoulder) && replaceRoadbed(level, driver, shoulder, material)) used++;
-        }
-        return used;
+        int crestWidth = mode == TrainVehicle.BallastMode.WIDE ? 1 : 0;
+        return used + BALLAST_PORTIONS * ballastRoadbed(level, driver, below, ballast, tangent, crestWidth, blocks);
     }
 
     private static boolean replaceRoadbed(ServerLevel level, ServerPlayer driver, BlockPos pos, BlockState ballast) {
-        return canReplaceRoadbed(level, driver, pos) && apply(level, driver, Map.of(pos, ballast), level.getBlockState(pos.below()));
-    }
-
-    private static boolean canReplaceRoadbed(ServerLevel level, ServerPlayer driver, BlockPos pos) {
         if (!level.isLoaded(pos) || !level.mayInteract(driver, pos)) return false;
-        BlockState state = level.getBlockState(pos);
-        if (state.isAir()) return TrackBlock.supported(level, pos);
-        return roadbedMaterial(state) && !NeoForge.EVENT_BUS.post(new BreakBlockEvent(level, pos, state, driver)).isCanceled();
+        BlockState old = level.getBlockState(pos);
+        if (old.isAir() ? !TrackBlock.supported(level, pos) : !ballastSoil(old) || !mayBreak(level, driver, pos, old)) {
+            return false;
+        }
+        return apply(level, driver, Map.of(pos, ballast), level.getBlockState(pos.below()));
     }
 
     private static boolean roadbedMaterial(BlockState state) {
@@ -251,32 +259,34 @@ final class TrackWork {
             || state.is(Blocks.COBBLESTONE) || state.is(Blocks.DIRT);
     }
 
-    private static RailNetwork.Rail ballastedRail(ServerLevel level, BlockPos pos) {
-        return level.getBlockState(pos).getBlock() instanceof TrackBlock track && track.kind.hasBallast()
-            ? RailNetwork.railAt(level, pos) : null;
+    private static boolean ballastSoil(BlockState state) {
+        if (state.hasBlockEntity()) return false;
+        return state.is(BlockTags.DIRT) || state.is(Blocks.GRASS_BLOCK) || state.is(Blocks.PODZOL) || state.is(Blocks.MYCELIUM)
+            || state.is(BlockTags.SAND) || state.is(Blocks.GRAVEL)
+            || state.is(BlockTags.BASE_STONE_OVERWORLD) || state.is(BlockTags.BASE_STONE_NETHER)
+            || state.is(Blocks.COBBLESTONE) || state.is(Blocks.COBBLED_DEEPSLATE);
     }
 
-    static int cascadeBallast(ServerLevel level, ServerPlayer actor, BlockPos ballast, boolean wide, int limit) {
-        if (limit == 0 || !level.isLoaded(ballast) || !level.mayInteract(actor, ballast)) return 0;
-        BlockState material = level.getBlockState(ballast);
-        if (!material.is(Trainmod.BALLAST.get())) return 0;
-        BlockPos track = ballast.above();
-        RailNetwork.Rail rail = ballastedRail(level, track);
-        if (rail == null) return 0;
-        Vec3 tangent = rail.path().tangent(rail.project(TrackGeometry.origin(track))).multiply(1, 0, 1).normalize();
-        int dx = (int) Math.round(-tangent.z);
-        int dz = (int) Math.round(tangent.x);
-        int crestWidth = wide ? 1 : 0;
+    private static int ballastRoadbed(ServerLevel level, ServerPlayer actor, BlockPos center, BlockState material,
+                                      Vec3 tangent, int crestWidth, int limit) {
+        int placed = replaceRoadbed(level, actor, center, material) ? 1 : 0;
+        if (placed == limit || !level.getBlockState(center).is(Trainmod.BALLAST.get()) || !level.mayInteract(actor, center)) {
+            return placed;
+        }
+        Vec3 heading = tangent.multiply(1, 0, 1).normalize();
+        int dx = (int) Math.round(-heading.z);
+        int dz = (int) Math.round(heading.x);
+        boolean diagonal = dx != 0 && dz != 0;
         Set<BlockPos> reached = new HashSet<>();
-        reached.add(ballast);
+        reached.add(center);
+        var pendingCrest = new ArrayList<BlockPos>(2);
+        placed += formCrest(level, actor, center, material, dx, dz, diagonal, crestWidth, reached, pendingCrest, limit - placed);
+        if (placed == limit) return placed;
         var layers = new ArrayList<List<BlockPos>>();
-        for (int depth = 0; depth <= BALLAST_DEPTH; depth++) {
-            var layer = traceBallastLayer(level, actor, ballast.below(depth), dx, dz, depth, crestWidth, reached);
-            if (depth > 0) layers.add(layer);
+        for (int depth = 1; depth <= BALLAST_DEPTH; depth++) {
+            layers.add(traceBallastLayer(level, actor, center.below(depth), dx, dz, diagonal, depth, crestWidth, reached));
         }
 
-        int crest = wide ? widenCrest(level, actor, ballast, material, dx, dz, reached, limit) : 0;
-        int placed = crest;
         // Settle from the lowest reachable layer up so each block has something to rest on.
         for (var layer : layers.reversed()) {
             for (BlockPos pos : layer) {
@@ -284,20 +294,47 @@ final class TrackWork {
                 if (placeShoulder(level, actor, pos, material)) placed++;
             }
         }
-        if (wide && crest < 2 && placed > crest && placed < limit) {
-            placed += widenCrest(level, actor, ballast, material, dx, dz, reached, limit - placed);
+        for (BlockPos shoulder : pendingCrest) {
+            if (placed == limit) break;
+            if (placeShoulder(level, actor, shoulder, material)) placed++;
+        }
+        return placed;
+    }
+
+    private static int formCrest(ServerLevel level, ServerPlayer actor, BlockPos center, BlockState material, int dx, int dz,
+                                 boolean diagonal, int width, Set<BlockPos> reached, List<BlockPos> pending, int limit) {
+        int stepsPerBlock = diagonal ? 2 : 1;
+        int edge = width * stepsPerBlock;
+        int placed = 0;
+        for (int side : new int[]{-1, 1}) {
+            for (int step = 1; step <= edge + stepsPerBlock; step++) {
+                BlockPos pos = slopeCell(center, dx, dz, step * side, diagonal);
+                if (step <= edge) {
+                    if (!canWorkAt(level, actor, pos) || RailNetwork.isRail(level.getBlockState(pos.above()))) break;
+                    BlockState state = level.getBlockState(pos);
+                    BlockPos outward = slopeCell(center, dx, dz, (step + 1) * side, diagonal);
+                    if (!state.isAir() && !state.is(Trainmod.BALLAST.get())
+                        && (!ballastSoil(state) || !level.getBlockState(pos.above()).isAir()
+                            || !level.isLoaded(outward) || retainingWall(level, pos, outward))) break;
+                    if (step == edge && !state.is(Trainmod.BALLAST.get())) {
+                        if (placed < limit && replaceRoadbed(level, actor, pos, material)) placed++;
+                        else if (state.isAir()) pending.add(pos);
+                        else break;
+                    }
+                } else if (!ballastCanReach(level, actor, pos)) break;
+                reached.add(pos);
+            }
         }
         return placed;
     }
 
     private static List<BlockPos> traceBallastLayer(ServerLevel level, ServerPlayer actor, BlockPos center, int dx, int dz,
-                                                     int depth, int crestWidth, Set<BlockPos> reached) {
+                                                     boolean diagonal, int depth, int crestWidth, Set<BlockPos> reached) {
         var layer = new ArrayList<BlockPos>();
-        if (depth > 0 && reached.contains(center.above()) && ballastCanReach(level, actor, center, null)) {
+        if (reached.contains(center.above()) && ballastCanReach(level, actor, center)) {
             reached.add(center);
             layer.add(center);
         }
-        boolean diagonal = dx != 0 && dz != 0;
         int stepsPerBlock = diagonal ? 2 : 1;
         int settleSteps = (depth + crestWidth) * stepsPerBlock;
         // Gravel can spill over the edge before dropping, even when the ground below that edge is solid.
@@ -307,10 +344,8 @@ final class TrackWork {
             for (int side : new int[]{-1, 1}) {
                 BlockPos pos = slopeCell(center, dx, dz, step * side, diagonal);
                 BlockPos inward = slopeCell(center, dx, dz, (step - 1) * side, diagonal);
-                BlockPos crestEdge = depth == 0 && step <= settleSteps
-                    ? slopeCell(center, dx, dz, (step + 1) * side, diagonal) : null;
                 if ((reached.contains(pos.above()) || reached.contains(inward))
-                    && ballastCanReach(level, actor, pos, crestEdge)) {
+                    && ballastCanReach(level, actor, pos)) {
                     reached.add(pos);
                     if (step <= settleSteps) layer.add(pos);
                 }
@@ -326,20 +361,25 @@ final class TrackWork {
         return center.offset(x * dx, 0, (step / 2) * dz);
     }
 
-    private static boolean ballastCanReach(ServerLevel level, ServerPlayer actor, BlockPos pos, @Nullable BlockPos crestEdge) {
-        if (!level.isInsideBuildHeight(pos) || !level.isLoaded(pos) || !level.mayInteract(actor, pos)) return false;
+    private static boolean canWorkAt(ServerLevel level, ServerPlayer actor, BlockPos pos) {
+        return level.isInsideBuildHeight(pos) && level.isLoaded(pos) && level.mayInteract(actor, pos);
+    }
+
+    private static boolean ballastCanReach(ServerLevel level, ServerPlayer actor, BlockPos pos) {
+        if (!canWorkAt(level, actor, pos)) return false;
         BlockState state = level.getBlockState(pos);
-        if (crestEdge == null) return state.isAir() || state.is(Trainmod.BALLAST.get());
-        BlockState overhead = level.getBlockState(pos.above());
-        if (RailNetwork.isRail(overhead)) return false;
-        if (state.isAir() || state.is(Trainmod.BALLAST.get())) return true;
-        // Dress exposed subgrade, while leaving a supported edge that drops away like a retaining wall intact.
-        return roadbedMaterial(state) && overhead.isAir() && level.isLoaded(crestEdge)
-            && (roadbedMaterial(level.getBlockState(crestEdge)) || !TrackBlock.supported(level, pos));
+        return state.isAir() || state.is(Trainmod.BALLAST.get());
+    }
+
+    private static boolean retainingWall(ServerLevel level, BlockPos shoulder, BlockPos outward) {
+        // A single foundation block can support an exposed shoulder. Preserve a continuous exposed wall face.
+        return level.getBlockState(outward).isAir() && level.getBlockState(outward.below()).isAir()
+            && level.getBlockState(outward.below(2)).isAir()
+            && TrackBlock.supported(level, shoulder) && TrackBlock.supported(level, shoulder.below());
     }
 
     private static boolean placeShoulder(ServerLevel level, ServerPlayer actor, BlockPos pos, BlockState material) {
-        if (!level.isInsideBuildHeight(pos) || !level.isLoaded(pos) || !level.mayInteract(actor, pos)
+        if (!canWorkAt(level, actor, pos)
             || !level.getBlockState(pos).isAir() || RailNetwork.isRail(level.getBlockState(pos.above()))) return false;
         BlockState ground = level.getBlockState(pos.below());
         return ground.isFaceSturdy(level, pos.below(), net.minecraft.core.Direction.UP)
@@ -372,17 +412,42 @@ final class TrackWork {
             rollback(snapshots, quiet);
             return false;
         }
+        notifyChanges(level, snapshots);
+        return true;
+    }
+
+    static boolean removeTrack(ServerLevel level, Map<BlockPos, BlockState> segments) {
+        // Remove every segment before notifying neighbors, so callbacks can only claim the kit once.
+        for (var entry : segments.entrySet()) {
+            if (level.getBlockState(entry.getKey()) != entry.getValue()) return false;
+        }
+        List<BlockSnapshot> snapshots = new ArrayList<>();
+        int quiet = Block.UPDATE_SKIP_ALL_SIDEEFFECTS;
+        for (BlockPos pos : segments.keySet()) {
+            var snapshot = BlockSnapshot.create(level.dimension(), level, pos, quiet);
+            if (!level.setBlock(pos, Blocks.AIR.defaultBlockState(), quiet)) {
+                rollback(snapshots, quiet);
+                return false;
+            }
+            snapshots.add(snapshot);
+        }
+        notifyChanges(level, snapshots);
+        return true;
+    }
+
+    private static void notifyChanges(ServerLevel level, List<BlockSnapshot> snapshots) {
         for (BlockSnapshot snapshot : snapshots) {
             BlockPos pos = snapshot.getPos();
             BlockState state = level.getBlockState(pos);
-            level.markAndNotifyBlock(pos, level.getChunkAt(pos), snapshot.getState(), state,
-                Block.UPDATE_ALL, Block.UPDATE_LIMIT);
+            BlockState old = snapshot.getState();
+            level.markAndNotifyBlock(pos, level.getChunkAt(pos), old, state, Block.UPDATE_ALL, Block.UPDATE_LIMIT);
             if (state.getBlock() instanceof TrackBlock.Turnout turnout && turnout.panel(state) != null) {
                 level.scheduleTick(pos, state.getBlock(), 1);
                 RailwayBlocks.Stand.pointsChanged(level, pos);
+            } else if (old.getBlock() instanceof TrackBlock.Turnout turnout && turnout.panel(old) != null) {
+                RailwayBlocks.Stand.pointsChanged(level, pos);
             }
         }
-        return true;
     }
 
     private static void rollback(List<BlockSnapshot> snapshots, int flags) {

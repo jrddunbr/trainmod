@@ -62,6 +62,7 @@ final class RailwayGameTests {
         new Case("electric_reserve", RailwayAdditionsGameTest::electricReserve),
         new Case("catenary_routes", RailwayAdditionsGameTest::catenaryRoutes),
         new Case("regulator_cargo", RailwayAdditionsGameTest::regulatorCargo),
+        new Case("track_wear", RailwayAdditionsGameTest::trackWear),
         new Case("regulator_walls", RailwayAdditionsGameTest::regulatorWalls),
         new Case("regulator_grade", RailwayAdditionsGameTest::regulatorGrade),
         new Case("bore_tickets", RailwayAdditionsGameTest::boreTickets),
@@ -330,7 +331,7 @@ final class RailwayGameTests {
                 "A train can follow the connection to the bridge rail");
             test.assertTrue(TrackEnds.connection(level, bridge.north(), port) == TrackEnds.Connection.BRIDGE,
                 "A bridge connection keeps the rail open at the joint and tapers the ballast onto the deck");
-            test.assertTrue(TrackWork.ballast(level, player, bridge.below(), 2, false) == 0,
+            test.assertTrue(TrackWork.ballast(level, player, bridge.below(), 8, TrainVehicle.BallastMode.NARROW) == 0,
                 "The ballast car leaves bridge track unballasted");
         } finally {
             level.getServer().getPlayerList().remove(player);
@@ -902,6 +903,10 @@ final class RailwayGameTests {
                 kit.useOn(useAt(driver, root.below(), 0.5, 1, 0.5));
                 test.assertTrue(level.getBlockState(root).getValue(TrackBlock.ROTATION) == heading,
                     "A regular six-block straight kit places facing along the cardinal or diagonal approach");
+                for (BlockPos cell : TrackGeometry.Kind.STRAIGHT_6.shape(heading, true).cells()) {
+                    BlockPos rail = root.offset(cell);
+                    level.setBlockAndUpdate(rail, level.getBlockState(rail).setValue(TrackBlock.CONDITION, TrackBlock.Condition.BALLASTED));
+                }
                 for (int z = 6; z <= 12; z++) {
                     for (int x = -2; x <= 2; x++) {
                         for (int y = 0; y < 4; y++) {
@@ -938,7 +943,7 @@ final class RailwayGameTests {
                     "The nose cuts ahead, the tires support the bore, and the center lays rail"
                         + " (diagonal=" + diagonal + ", cut=" + cutAhead + ", laid=" + laidAtCenter
                         + ", tires=" + tiresUsed + ", travel=" + (bore.getZ() - root.getZ())
-                        + ", status=" + boreMessages(driver) + ")");
+                        + ", status=" + overlayMessages(driver) + ")");
                 for (int z = 6; z <= 11; z++) {
                     var cell = root.offset(dx * z, 0, z);
                     test.assertTrue(level.getBlockState(cell).is(Trainmod.TRACK.get(TrackGeometry.Kind.UNBALLASTED_STRAIGHT).get())
@@ -1264,7 +1269,7 @@ final class RailwayGameTests {
                 && contents.getKey().equals("message.trainmod.coupled")).count();
     }
 
-    private static List<net.minecraft.network.chat.Component> boreMessages(ServerPlayer player) {
+    static List<net.minecraft.network.chat.Component> overlayMessages(ServerPlayer player) {
         var channel = (io.netty.channel.embedded.EmbeddedChannel) player.connection.getConnection().channel();
         channel.runPendingTasks();
         return channel.outboundMessages().stream()
@@ -1335,9 +1340,11 @@ final class RailwayGameTests {
         }
         test.assertTrue(freight.cargo.countItem(Items.COBBLESTONE) == 10 && bore.cargo.isEmpty(),
             "Excavation drops go to freight before the buffer");
-        test.assertTrue(TrackWork.ballast(level, driver, slice.below(), 1, false) == 0
-            && level.getBlockState(slice.below()).is(Blocks.COBBLESTONE), "An undersupplied regulator leaves both layers alone");
-        test.assertTrue(TrackWork.ballast(level, driver, slice.below(), 2, false) == 2, "The regulator fills the ties and the roadbed");
+        test.assertTrue(TrackWork.ballast(level, driver, slice.below(), 1, TrainVehicle.BallastMode.NARROW) == 1
+            && TrackBlock.ballasted(level.getBlockState(slice)) && level.getBlockState(slice.below()).is(Blocks.COBBLESTONE),
+            "One eighth of a ballast block fills the ties and leaves the roadbed intact");
+        test.assertTrue(TrackWork.ballast(level, driver, slice.below(), 8, TrainVehicle.BallastMode.NARROW) == 8,
+            "Replacing the roadbed takes one full ballast block");
         test.assertTrue(level.getBlockState(slice.below()).is(Trainmod.BALLAST.get())
             && RailNetwork.railAt(level, slice) != null, "Replacing ballast preserves usable track");
         bore.cargo.setItem(53, new ItemStack(Items.STONE, 6));

@@ -165,11 +165,28 @@ final class RailwayAdditionsGameTest {
         test.assertTrue(craftedTies.is(Trainmod.TIE_BUNDLE.get()) && craftedTies.getCount() == 2,
             "Two diagonal planks of any types craft two bundles");
         var rail = new ItemStack(Trainmod.RAIL.get());
-        var straightInput = CraftingInput.of(3, 3, List.of(rail, empty, rail, empty, ties, empty,
-            empty, new ItemStack(Trainmod.BALLAST.get()), empty));
+        var straightInput = CraftingInput.of(3, 2, List.of(rail, empty, rail, empty, ties, empty));
         var straight = recipes.getRecipeFor(RecipeType.CRAFTING, straightInput, level).orElseThrow().value().assemble(straightInput);
-        test.assertTrue(straight.is(Trainmod.TRACK_ITEMS.get(TrackGeometry.Kind.STRAIGHT).get()),
-            "Two rails, a tie bundle and ballast make one straight track");
+        test.assertTrue(straight.is(Trainmod.TRACK_ITEMS.get(TrackGeometry.Kind.STRAIGHT).get()) && straight.getCount() == 4,
+            "Two rails and a tie bundle make four single-block straights");
+        var scrap = new ItemStack(Trainmod.TRACK_SCRAP.get());
+        var incompleteScrap = CraftingInput.of(2, 2, List.of(scrap, empty, scrap, scrap));
+        test.assertTrue(recipes.getRecipeFor(RecipeType.CRAFTING, incompleteScrap, level).isEmpty(),
+            "Three scraps cannot refund a four-track batch");
+        var recycleInput = CraftingInput.of(2, 2, List.of(scrap, scrap, scrap, scrap));
+        var recycling = recipes.getRecipeFor(RecipeType.CRAFTING, recycleInput, level).orElseThrow().value();
+        var reclaimedRails = recycling.assemble(recycleInput);
+        var remainders = recycling.getRemainingItems(recycleInput);
+        test.assertTrue(reclaimedRails.is(Trainmod.RAIL.get()) && reclaimedRails.getCount() == 2
+            && remainders.stream().filter(stack -> stack.is(Trainmod.TIE_BUNDLE.get())).mapToInt(ItemStack::getCount).sum() == 1,
+            "Four scraps return precisely the original pair of rails and tie bundle");
+        var obsolete = CraftingInput.of(3, 3, List.of(rail, empty, rail, empty, ties, empty,
+            empty, new ItemStack(Trainmod.BALLAST.get()), empty));
+        test.assertTrue(recipes.getRecipeFor(RecipeType.CRAFTING, obsolete, level).isEmpty(),
+            "The old recipe with ballast no longer matches");
+        var bridge = CraftingInput.of(3, 3, List.of(rail, empty, rail, empty, ties, empty, rail, empty, rail));
+        test.assertTrue(recipes.getRecipeFor(RecipeType.CRAFTING, bridge, level).orElseThrow().value().assemble(bridge)
+            .is(Trainmod.TRACK_ITEMS.get(TrackGeometry.Kind.BRIDGE_STRAIGHT).get()), "Four rails reinforce a bridge track");
         var longer = CraftingInput.of(2, 2, List.of(straight, empty, straight, straight));
         test.assertTrue(recipes.getRecipeFor(RecipeType.CRAFTING, longer, level).orElseThrow().value().assemble(longer)
             .is(Trainmod.TRACK_ITEMS.get(TrackGeometry.Kind.STRAIGHT_3).get()), "Three individual tracks combine in any shape");
@@ -545,7 +562,8 @@ final class RailwayAdditionsGameTest {
     static void regulatorCargo(GameTestHelper test) {
         var level = test.getLevel();
         BlockPos start = test.absolutePos(new BlockPos(0, 135, 0));
-        var substrates = List.of(Blocks.SAND, Blocks.GRAVEL, Blocks.STONE, Blocks.COBBLESTONE, Blocks.DIRT);
+        var substrates = List.of(Blocks.SAND, Blocks.GRAVEL, Blocks.STONE, Blocks.COBBLESTONE, Blocks.DIRT,
+            Blocks.GRASS_BLOCK, Blocks.DEEPSLATE);
         for (int i = 0; i < substrates.size(); i++) {
             BlockPos rail = start.south(i);
             RailwayGameTests.straight(level, rail, 0);
@@ -557,7 +575,7 @@ final class RailwayAdditionsGameTest {
         regulator.regulate(level, driver, start.below());
         test.assertTrue(level.getBlockState(start.below()).is(Blocks.SAND), "An empty regulator leaves the rail bed untouched");
         regulator.cargo.setItem(0, new ItemStack(Items.GRAVEL, 2));
-        regulator.cargo.setItem(1, new ItemStack(Trainmod.BALLAST.get(), 3));
+        regulator.cargo.setItem(1, new ItemStack(Trainmod.BALLAST.get(), substrates.size() - 2));
         var denied = start.south(2).below();
         java.util.function.Consumer<BreakBlockEvent> deniedBreak = event -> {
             if (event.getPos().equals(denied) && event.getPlayer() == driver) event.setCanceled(true);
@@ -616,10 +634,13 @@ final class RailwayAdditionsGameTest {
         BlockPos wide = start.offset(10, 0, 0);
         RailwayGameTests.straight(level, wide, 0);
         for (int side = -1; side <= 1; side++) {
-            level.setBlockAndUpdate(wide.below().east(side), Blocks.DIRT.defaultBlockState());
+            level.setBlockAndUpdate(wide.below().east(side), Blocks.GRASS_BLOCK.defaultBlockState());
+            if (side != 0) level.setBlockAndUpdate(wide.below(2).east(side), Blocks.STONE.defaultBlockState());
         }
         driver.setPos(regulator.position());
         var menu = new BallastRegulatorMenu(1, driver.getInventory(), regulator.cargo, regulator);
+        test.assertTrue(!menu.working() && menu.clickMenuButton(driver, BallastRegulatorMenu.TOGGLE_WORK) && menu.working(),
+            "The cargo screen can activate the regulator");
         test.assertTrue(menu.mode() == TrainVehicle.BallastMode.NARROW && menu.clickMenuButton(driver, BallastRegulatorMenu.CYCLE_MODE)
             && menu.mode() == TrainVehicle.BallastMode.WIDE,
             "The cargo screen toggles the regulator from narrow to wide");
@@ -628,7 +649,7 @@ final class RailwayAdditionsGameTest {
         test.assertTrue(regulator.cargo.isEmpty() && level.getBlockState(wide.below()).is(Trainmod.BALLAST.get())
             && level.getBlockState(wide.below().east()).is(Trainmod.BALLAST.get())
             && level.getBlockState(wide.below().west()).is(Trainmod.BALLAST.get()),
-            "Wide mode consumes three gravel and fills a three-block-wide layer directly below the rail");
+            "Wide replaces both supported shoulders beside open air and pays only for the three crest blocks");
         BlockPos wideSlope = wide.south(18);
         RailwayGameTests.straight(level, wideSlope, 0);
         for (int side = -6; side <= 6; side++) {
@@ -652,6 +673,7 @@ final class RailwayAdditionsGameTest {
             && menu.mode() == TrainVehicle.BallastMode.TRACK_ONLY, "Wide cycles to Track Only");
         restored.readAdditionalSaveData(vehicleData(level, regulator));
         test.assertTrue(restored.ballastMode() == TrainVehicle.BallastMode.TRACK_ONLY, "Track Only survives a reload");
+        test.assertTrue(restored.ballastWorking(), "The operating state survives a reload");
 
         BlockPos bare = wide.south(5);
         RailwayGameTests.piece(level, bare, TrackGeometry.Kind.UNBALLASTED_STRAIGHT, 14, true);
@@ -659,9 +681,47 @@ final class RailwayAdditionsGameTest {
         regulator.cargo.setItem(0, new ItemStack(Items.GRAVEL));
         regulator.regulate(level, driver, bare.below());
         BlockState finished = level.getBlockState(bare);
-        test.assertTrue(regulator.cargo.isEmpty() && finished.is(Trainmod.TRACK.get(TrackGeometry.Kind.STRAIGHT).get())
+        test.assertTrue(regulator.cargo.isEmpty() && menu.reserve() == 7
+            && finished.is(Trainmod.TRACK.get(TrackGeometry.Kind.STRAIGHT).get()) && TrackBlock.ballasted(finished)
             && finished.getValue(TrackBlock.ROTATION) == 14 && level.getBlockState(bare.below()).is(Blocks.COBBLESTONE),
-            "Track Only finishes a bore-laid section using one gravel and leaves its foundation intact");
+            "Track Only finishes a bore-laid section with one eighth of a gravel and leaves its foundation intact");
+        restored.readAdditionalSaveData(vehicleData(level, regulator));
+        test.assertTrue(restored.ballastRemainder() == 7, "Partially used ballast survives a reload");
+        var kind = TrackGeometry.Kind.STRAIGHT_8;
+        BlockPos strip = wide.east(3);
+        var shape = kind.shape(0, true);
+        for (BlockPos offset : shape.cells()) {
+            level.setBlockAndUpdate(strip.offset(offset).below(), Blocks.COBBLESTONE.defaultBlockState());
+        }
+        test.assertTrue(TrackItem.place(level, driver, kind, new TrackItem.Placement(strip, 0, true, false, shape, 0, List.of())),
+            "The eight-block kit can be laid on cobblestone");
+        for (int i = 0; i < shape.cells().size(); i++) {
+            BlockPos cell = strip.offset(shape.cells().get(i));
+            var track = Trainmod.TRACK.get(kind).get();
+            test.assertTrue(TrackBlock.unballasted(level.getBlockState(cell)), "Placed straight sections start bare");
+            restored.regulate(level, driver, cell.below());
+            test.assertTrue(level.getBlockState(cell).is(track) && track.index(level.getBlockState(cell)) == i
+                && TrackBlock.ballasted(level.getBlockState(cell)) == (i < 7)
+                && level.getBlockState(cell.below()).is(Blocks.COBBLESTONE),
+                "Only seven more sections can be filled and each keeps the kit geometry and foundation");
+        }
+        test.assertTrue(restored.ballastRemainder() == 0 && restored.cargo.isEmpty(),
+            "The bore section and seven kit sections use exactly one item");
+
+        BlockPos grass = wide.south(11);
+        RailwayGameTests.straight(level, grass, 0);
+        level.setBlockAndUpdate(grass, level.getBlockState(grass).setValue(TrackBlock.CONDITION, TrackBlock.Condition.UNBALLASTED));
+        for (int side = -1; side <= 1; side++) {
+            level.setBlockAndUpdate(grass.below().east(side), Blocks.GRASS_BLOCK.defaultBlockState());
+        }
+        regulator.cargo.setItem(0, new ItemStack(Items.GRAVEL, 64));
+        regulator.regulate(level, driver, grass.below());
+        test.assertTrue(TrackBlock.ballasted(level.getBlockState(grass))
+            && level.getBlockState(grass.below()).is(Blocks.GRASS_BLOCK)
+            && level.getBlockState(grass.below().east()).is(Blocks.GRASS_BLOCK)
+            && level.getBlockState(grass.below().west()).is(Blocks.GRASS_BLOCK)
+            && regulator.cargo.getItem(0).getCount() == 64 && regulator.ballastRemainder() == 6,
+            "Track Only fills the ties from the reserve and leaves all three replaceable blocks below untouched");
 
         BlockPos ready = wide.south(9);
         RailwayGameTests.straight(level, ready, 0);
@@ -675,6 +735,25 @@ final class RailwayAdditionsGameTest {
             && menu.mode() == TrainVehicle.BallastMode.NARROW, "Track Only cycles to Narrow");
         menu.removed(driver);
         regulator.discard();
+
+        BlockPos pushTrack = start.east(6);
+        for (int z = 0; z <= 8; z++) {
+            BlockPos cell = pushTrack.south(z);
+            RailwayGameTests.straight(level, cell, 0);
+            level.setBlockAndUpdate(cell, level.getBlockState(cell).setValue(TrackBlock.CONDITION, TrackBlock.Condition.UNBALLASTED));
+        }
+        var pushed = RailwayGameTests.vehicle(level, TrainVehicle.Kind.BALLAST_CAR, pushTrack.south(2));
+        pushed.cycleBallastMode();
+        pushed.cycleBallastMode();
+        pushed.toggleBallastWork(driver);
+        pushed.cargo.setItem(0, new ItemStack(Items.GRAVEL));
+        for (int tick = 0; tick < 12; tick++) {
+            pushed.push(0, 0, 0.08);
+            pushed.tick();
+        }
+        test.assertTrue(TrackBlock.ballasted(level.getBlockState(pushTrack.south(4))),
+            "An active regulator also fills the track when pushed without a locomotive");
+        pushed.discard();
         test.succeed();
     }
 
@@ -700,7 +779,8 @@ final class RailwayAdditionsGameTest {
                 level.setBlockAndUpdate(unsupported.below(), Blocks.AIR.defaultBlockState());
 
                 for (boolean wide : new boolean[]{false, true}) {
-                    TrackWork.cascadeBallast(level, driver, crest, wide, 64);
+                    TrackWork.ballast(level, driver, crest, 64 * TrackWork.BALLAST_PORTIONS,
+                        wide ? TrainVehicle.BallastMode.WIDE : TrainVehicle.BallastMode.NARROW);
                     test.assertTrue(level.getBlockState(crest.west()).is(Blocks.STONE), "The regulator preserves the wall at the crest");
                     for (int depth = 2; depth <= 4; depth++) {
                         BlockPos behindWall = crest.offset(-2, -depth, diagonal ? 2 : 0);
@@ -718,9 +798,109 @@ final class RailwayAdditionsGameTest {
         test.succeed();
     }
 
+    static void trackWear(GameTestHelper test) {
+        var level = test.getLevel();
+        var driver = test.makeMockServerPlayerInLevel();
+        var protectedDriver = test.makeMockServerPlayerInLevel();
+        BlockPos start = isolatedTrack(test, 216).south(7);
+        BlockPos protectedStart = start.east(5);
+        var kind = TrackGeometry.Kind.STRAIGHT_3;
+        var shape = kind.shape(0, true);
+        for (BlockPos line : List.of(start, protectedStart)) {
+            for (int z = -7; z <= 7; z++) RailwayGameTests.straight(level, line.south(z), 0);
+            test.assertTrue(TrackItem.place(level, driver, kind, new TrackItem.Placement(line, 0, true, false, shape, 0, List.of())),
+                "Both lines start with a bare multi-block kit");
+            // Isolate the failure to the middle block of the kit.
+            for (BlockPos cell : List.of(line, line.south(2))) {
+                level.setBlockAndUpdate(cell, level.getBlockState(cell).setValue(TrackBlock.CONDITION, TrackBlock.Condition.BALLASTED));
+            }
+        }
+        var engine = RailwayGameTests.vehicle(level, TrainVehicle.Kind.LOCOMOTIVE, start.north(3));
+        var guarded = RailwayGameTests.vehicle(level, TrainVehicle.Kind.LOCOMOTIVE, protectedStart.north(3));
+        var regulator = RailwayGameTests.vehicle(level, TrainVehicle.Kind.BALLAST_CAR, protectedStart.north(6));
+        regulator.cargo.setItem(0, new ItemStack(Items.GRAVEL, 2));
+        regulator.cycleBallastMode();
+        regulator.cycleBallastMode();
+        couple(protectedDriver, guarded, -1, regulator, 1);
+        protectedDriver.setPos(regulator.position());
+        protectedDriver.setShiftKeyDown(true);
+        regulator.interact(protectedDriver, InteractionHand.MAIN_HAND, Vec3.ZERO);
+        protectedDriver.setShiftKeyDown(false);
+        for (var locomotive : List.of(engine, guarded)) {
+            locomotive.supplies.setItem(0, new ItemStack(Trainmod.DIESEL_BUCKET.get()));
+        }
+        driver.setPos(engine.position());
+        driver.startRiding(engine);
+        protectedDriver.setPos(guarded.position());
+        protectedDriver.startRiding(guarded);
+        long seed = 0;
+        while (true) {
+            engine.getRandom().setSeed(seed);
+            if (engine.getRandom().nextFloat() < 0.05f) break;
+            seed++;
+        }
+        long failingRoll = seed;
+        test.onEachTick(() -> {
+            engine.getRandom().setSeed(failingRoll);
+            guarded.getRandom().setSeed(failingRoll);
+            engine.receiveControls(driver, TrainControls.FORWARD);
+            guarded.receiveControls(protectedDriver, TrainControls.FORWARD);
+        });
+        BlockPos damaged = start.south();
+        test.startSequence()
+            .thenWaitUntil(() -> {
+                test.assertTrue(TrackBlock.broken(level.getBlockState(damaged)), "An uncovered consist can damage bare track");
+                test.assertTrue(TrackBlock.ballasted(level.getBlockState(protectedStart.south())),
+                    "An active regulator protects the leading locomotive and fills the rails when it follows");
+            })
+            .thenExecute(() -> {
+                var first = RailwayGameTests.at(level, start);
+                var last = RailwayGameTests.at(level, start.south(2));
+                test.assertTrue(RailNetwork.advance(level, first, 0.4) != null
+                    && RailNetwork.advance(level, first, 2) == null && RailNetwork.advance(level, last, -2) == null,
+                    "The intact parts remain usable and the damaged middle blocks both directions");
+                test.assertTrue(RailNetwork.advance(level, engine.cursor(), -0.5) != null,
+                    "The engine can reverse away after breaking track");
+                test.assertTrue(TrackWork.ballast(level, driver, damaged.below(), 8, TrainVehicle.BallastMode.TRACK_ONLY) == 0,
+                    "Damaged track must be recycled");
+                test.assertTrue(level.getBlockState(damaged).getShape(level, damaged).max(Direction.Axis.X) > 1,
+                    "The displaced rail and ties can be targeted for recycling");
+                var hit = new BlockHitResult(TrackGeometry.origin(damaged), Direction.UP, damaged, false);
+                driver.stopRiding();
+                driver.setPos(TrackGeometry.origin(damaged));
+                driver.gameMode.useItemOn(driver, level, ItemStack.EMPTY, InteractionHand.MAIN_HAND, hit);
+                driver.gameMode.useItemOn(driver, level, ItemStack.EMPTY, InteractionHand.OFF_HAND, hit);
+                driver.gameMode.useItemOn(driver, level, ItemStack.EMPTY, InteractionHand.MAIN_HAND, hit);
+                var drops = level.getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,
+                    new net.minecraft.world.phys.AABB(damaged).inflate(1));
+                var straight = Trainmod.TRACK_ITEMS.get(TrackGeometry.Kind.STRAIGHT).get();
+                test.assertTrue(List.of(start, damaged, start.south(2)).stream().allMatch(cell -> level.getBlockState(cell).isAir())
+                    && drops.size() == 1 && drops.getFirst().getItem().is(straight) && drops.getFirst().getItem().getCount() == 3,
+                    "Repeated clicks remove the kit and return a single stack of its three ingredients");
+
+                BlockPos single = damaged.east(2);
+                RailwayGameTests.straight(level, single, 0);
+                level.setBlockAndUpdate(single, level.getBlockState(single).setValue(TrackBlock.CONDITION, TrackBlock.Condition.BROKEN));
+                driver.gameMode.useItemOn(driver, level, ItemStack.EMPTY, InteractionHand.MAIN_HAND,
+                    new BlockHitResult(TrackGeometry.origin(single), Direction.UP, single, false));
+                var scrap = level.getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,
+                    new net.minecraft.world.phys.AABB(single).inflate(0.5));
+                test.assertTrue(level.getBlockState(single).isAir() && scrap.size() == 1
+                    && scrap.getFirst().getItem().is(Trainmod.TRACK_SCRAP.get()) && scrap.getFirst().getItem().getCount() == 1,
+                    "A single straight returns one scrap from its four-piece batch");
+                protectedDriver.stopRiding();
+                for (var player : List.of(driver, protectedDriver)) level.getServer().getPlayerList().remove(player);
+                engine.discard();
+                guarded.discard();
+                regulator.discard();
+            })
+            .thenSucceed();
+    }
+
     static void regulatorGrade(GameTestHelper test) {
         var level = test.getLevel();
-        BlockPos low = isolatedTrack(test, 226).south(6);
+        // Keep the locomotive in the test's ticking chunk until the trailing regulator crosses the bridge.
+        BlockPos low = isolatedTrack(test, 226).south();
         var grade = TrackGeometry.Kind.GRADE_8;
         for (int i = 1; i <= 7; i++) RailwayGameTests.straight(level, low.north(i), 0);
         for (BlockPos offset : grade.shape(0, true).cells()) {
@@ -739,8 +919,8 @@ final class RailwayAdditionsGameTest {
         BlockPos bridge = upper.south();
         RailwayGameTests.piece(level, bridge, TrackGeometry.Kind.BRIDGE_STRAIGHT, 0, true);
         for (int i = 1; i <= 9; i++) RailwayGameTests.straight(level, bridge.south(i), 0);
-        var engine = RailwayGameTests.vehicle(level, TrainVehicle.Kind.LOCOMOTIVE, low.north(3));
-        var regulator = RailwayGameTests.vehicle(level, TrainVehicle.Kind.BALLAST_CAR, low.north(6));
+        var engine = RailwayGameTests.vehicle(level, TrainVehicle.Kind.LOCOMOTIVE, low.north(2));
+        var regulator = RailwayGameTests.vehicle(level, TrainVehicle.Kind.BALLAST_CAR, low.north(5));
         engine.supplies.setItem(0, new ItemStack(Trainmod.DIESEL_BUCKET.get()));
         regulator.cargo.setItem(0, new ItemStack(Items.GRAVEL, 32));
         couple(driver, engine, -1, regulator, 1);
@@ -754,10 +934,14 @@ final class RailwayAdditionsGameTest {
         test.onEachTick(() -> engine.receiveControls(driver, TrainControls.FORWARD));
         test.startSequence()
             .thenWaitUntil(() -> test.assertTrue(regulator.getZ() > bridge.getZ() + 1,
-                "The regulator completes the climb and crosses the bridge rail"))
+                "The regulator crosses the bridge rail. Engine " + engine.position().subtract(TrackGeometry.origin(low))
+                    + ", regulator " + regulator.position().subtract(TrackGeometry.origin(low)) + ", controls "
+                    + RailwayGameTests.overlayMessages(driver).stream().map(net.minecraft.network.chat.Component::getString).distinct().toList()))
             .thenExecute(() -> {
                 for (BlockPos cell : grade.shape(0, true).cells()) {
-                    test.assertTrue(level.getBlockState(low.offset(cell).below()).is(Trainmod.BALLAST.get()),
+                    BlockPos track = low.offset(cell);
+                    test.assertTrue(TrackBlock.ballasted(level.getBlockState(track))
+                        && level.getBlockState(track.below()).is(Trainmod.BALLAST.get()),
                         "The moving regulator ballasts each grade segment, including the raised end " + cell);
                 }
                 test.assertTrue(level.getBlockState(bridge.below()).is(Blocks.STONE), "Driving over the bridge rail leaves its foundation alone");

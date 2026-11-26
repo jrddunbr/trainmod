@@ -10,13 +10,13 @@ final class SignalCabinMesh {
     private static final double RIGHT_HINGE = 16 - LEFT_HINGE;
     private static final double HINGE_DEPTH = 0.90;
     private static final UnaryOperator<Vec3> STATIC = point -> point;
-    private final RailMesh.Mesh mesh;
+    private final ObjMesh mesh;
 
     private SignalCabinMesh(boolean upperOnly) {
-        mesh = new RailMesh.Mesh(upperOnly ? BlockPos.ZERO.above() : BlockPos.ZERO, true, "signal_cabin");
+        mesh = new ObjMesh(upperOnly ? BlockPos.ZERO.above() : BlockPos.ZERO, true, "signal_cabin");
     }
 
-    static RailMesh.Mesh create(boolean lower, boolean upper, boolean open, boolean westHinge) {
+    static ObjMesh create(boolean lower, boolean upper, boolean open, boolean westHinge) {
         var cabin = new SignalCabinMesh(upper && !lower);
         if (lower) cabin.walls(0, 16);
         if (upper) {

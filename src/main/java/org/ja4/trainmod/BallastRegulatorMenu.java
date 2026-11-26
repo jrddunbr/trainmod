@@ -11,8 +11,11 @@ import org.jspecify.annotations.Nullable;
 
 final class BallastRegulatorMenu extends ChestMenu {
     static final int CYCLE_MODE = 0;
+    static final int TOGGLE_WORK = 1;
     private final @Nullable TrainVehicle regulator;
     private final DataSlot mode;
+    private final DataSlot reserve;
+    private final DataSlot working;
 
     BallastRegulatorMenu(int id, Inventory inventory) {
         this(id, inventory, new SimpleContainer(27), null);
@@ -28,14 +31,34 @@ final class BallastRegulatorMenu extends ChestMenu {
             @Override
             public void set(int value) {}
         });
+        reserve = addDataSlot(regulator == null ? DataSlot.standalone() : new DataSlot() {
+            @Override
+            public int get() { return regulator.ballastRemainder(); }
+
+            @Override
+            public void set(int value) {}
+        });
+        working = addDataSlot(regulator == null ? DataSlot.standalone() : new DataSlot() {
+            @Override
+            public int get() { return regulator.ballastWorking() ? 1 : 0; }
+
+            @Override
+            public void set(int value) {}
+        });
     }
 
     TrainVehicle.BallastMode mode() { return TrainVehicle.BallastMode.byId(mode.get()); }
 
+    int reserve() { return reserve.get(); }
+
+    boolean working() { return working.get() != 0; }
+
     @Override
     public boolean clickMenuButton(Player player, int button) {
-        if (button != CYCLE_MODE || regulator == null || !stillValid(player)) return false;
-        regulator.cycleBallastMode();
+        if (regulator == null || !stillValid(player)) return false;
+        if (button == CYCLE_MODE) regulator.cycleBallastMode();
+        else if (button == TOGGLE_WORK) regulator.toggleBallastWork(player);
+        else return false;
         return true;
     }
 

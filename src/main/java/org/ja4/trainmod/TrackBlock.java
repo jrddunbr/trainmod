@@ -1,9 +1,17 @@
 package org.ja4.trainmod;
 
+import java.util.LinkedHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.RandomSource;
+import net.minecraft.util.StringRepresentable;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
@@ -16,10 +24,23 @@ import net.minecraft.world.level.block.state.properties.ChestType;
 import net.minecraft.world.level.block.state.properties.EnumProperty;
 import net.minecraft.world.level.block.state.properties.IntegerProperty;
 import net.minecraft.world.level.redstone.Orientation;
+import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
 class TrackBlock extends Block {
+    enum Condition implements StringRepresentable {
+        BALLASTED("ballasted"), UNBALLASTED("unballasted"), BROKEN("broken");
+
+        private final String name;
+
+        Condition(String name) { this.name = name; }
+
+        @Override
+        public String getSerializedName() { return name; }
+    }
+
+    static final EnumProperty<Condition> CONDITION = EnumProperty.create("condition", Condition.class);
     static final net.minecraft.world.level.block.state.properties.BooleanProperty COMPACT =
         net.minecraft.world.level.block.state.properties.BooleanProperty.create("compact");
     static final net.minecraft.world.level.block.state.properties.BooleanProperty DIAGONAL_LOW =
@@ -29,12 +50,14 @@ class TrackBlock extends Block {
     static final EnumProperty<ChestType> HAND = EnumProperty.create("type", ChestType.class,
         ChestType.LEFT, ChestType.RIGHT);
     static final VoxelShape OUTLINE = Block.box(0, 0, 0, 16, 4, 16);
+    private static final VoxelShape BROKEN_OUTLINE = Block.box(-4, 0, -4, 20, 4, 20);
     final TrackGeometry.Kind kind;
 
     TrackBlock(TrackGeometry.Kind kind, Properties properties) {
         super(properties);
         this.kind = kind;
         registerDefaultState(defaultBlockState().setValue(indexProperty(), 0).setValue(HAND, ChestType.LEFT)
+            .setValue(CONDITION, kind == TrackGeometry.Kind.UNBALLASTED_STRAIGHT ? Condition.UNBALLASTED : Condition.BALLASTED)
             .setValue(ROTATION, kind == TrackGeometry.Kind.DIAGONAL ? 14 : 0));
     }
 
@@ -57,9 +80,23 @@ class TrackBlock extends Block {
 
     int index(BlockState state) { return state.getValue(indexProperty()); }
 
+    static boolean ballasted(BlockState state) {
+        return state.getBlock() instanceof TrackBlock track && track.kind.hasBallast()
+            && state.getValue(CONDITION) == Condition.BALLASTED;
+    }
+
+    static boolean unballasted(BlockState state) {
+        return state.getBlock() instanceof TrackBlock track && track.kind != TrackGeometry.Kind.BRIDGE_STRAIGHT
+            && state.getValue(CONDITION) == Condition.UNBALLASTED;
+    }
+
+    static boolean broken(BlockState state) {
+        return state.hasProperty(CONDITION) && state.getValue(CONDITION) == Condition.BROKEN;
+    }
+
     @Override
     protected void createBlockStateDefinition(StateDefinition.Builder<Block, BlockState> builder) {
-        builder.add(indexProperty(), ROTATION, HAND);
+        builder.add(indexProperty(), ROTATION, HAND, CONDITION);
     }
 
     @Override
@@ -77,10 +114,11 @@ class TrackBlock extends Block {
                     height = Math.min(1, (Math.abs(cell.getX()) + Math.abs(cell.getZ()) + 0.5) / kind.gradeRun());
                 }
                 double rise = height - cell.getY();
-                return Block.box(0, Math.max(0, rise * 16 - 3), 0, 16, Math.max(1, rise * 16 + 4), 16);
+                int edge = broken(state) ? 4 : 0;
+                return Block.box(-edge, Math.max(0, rise * 16 - 3), -edge, 16 + edge, Math.max(1, rise * 16 + 4), 16 + edge);
             }
         }
-        return OUTLINE;
+        return broken(state) ? BROKEN_OUTLINE : OUTLINE;
     }
 
     @Override
@@ -101,11 +139,54 @@ class TrackBlock extends Block {
     protected net.minecraft.world.item.ItemStack getCloneItemStack(net.minecraft.world.level.LevelReader level,
             BlockPos pos, BlockState state, boolean includeData) {
         var kit = switch (kind) {
-            case DIAGONAL -> TrackGeometry.Kind.STRAIGHT;
-            case UNBALLASTED_STRAIGHT -> TrackGeometry.Kind.BRIDGE_STRAIGHT;
+            case DIAGONAL, UNBALLASTED_STRAIGHT -> TrackGeometry.Kind.STRAIGHT;
             default -> kind;
         };
         return new net.minecraft.world.item.ItemStack(Trainmod.TRACK_ITEMS.get(kit).get());
+    }
+
+    @Override
+    protected float getDestroyProgress(BlockState state, Player player, BlockGetter level, BlockPos pos) {
+        var cells = shape(state).cells();
+        int index = index(state);
+        if (index < cells.size()) {
+            BlockPos root = pos.subtract(cells.get(index));
+            for (int i = 0; i < cells.size(); i++) {
+                BlockState segment = level.getBlockState(root.offset(cells.get(i)));
+                if (broken(segment) && RailNetwork.matches(state, segment, i)) return 0;
+            }
+        }
+        return super.getDestroyProgress(state, player, level, pos);
+    }
+
+    @Override
+    protected InteractionResult useWithoutItem(BlockState state, Level level, BlockPos pos, Player player, BlockHitResult hit) {
+        if (!broken(state)) return InteractionResult.PASS;
+        if (level instanceof ServerLevel server && player instanceof ServerPlayer recycler) {
+            var offsets = shape(state).cells();
+            int index = index(state);
+            if (index >= offsets.size()) return InteractionResult.FAIL;
+            BlockPos root = pos.subtract(offsets.get(index));
+            var segments = new LinkedHashMap<BlockPos, BlockState>();
+            for (int i = 0; i < offsets.size(); i++) {
+                BlockPos cell = root.offset(offsets.get(i));
+                if (!server.isLoaded(cell)) return InteractionResult.FAIL;
+                BlockState segment = server.getBlockState(cell);
+                if (!RailNetwork.matches(state, segment, i)) continue;
+                if (!TrackWork.mayBreak(server, recycler, cell, segment)) return InteractionResult.FAIL;
+                segments.put(cell, segment);
+            }
+            if (segments.get(pos) != state || !TrackWork.removeTrack(server, segments)) return InteractionResult.FAIL;
+            if (segments.containsKey(root)) {
+                var quantities = new LinkedHashMap<String, Integer>();
+                for (String item : TrackMaterials.salvage(kind)) {
+                    quantities.merge(item, 1, Integer::sum);
+                }
+                quantities.forEach((item, count) ->
+                    popResource(server, pos, new ItemStack(BuiltInRegistries.ITEM.getValue(Identifier.parse(item)), count)));
+            }
+        }
+        return InteractionResult.SUCCESS;
     }
 
     @Override
@@ -131,9 +212,7 @@ class TrackBlock extends Block {
                     if (!RailNetwork.matches(state, actual, i)) {
                         continue;
                     }
-                    if (!server.mayInteract(miner, segment) || miner.blockActionRestricted(level, segment, miner.gameMode())
-                        || net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(
-                            new net.neoforged.neoforge.event.level.block.BreakBlockEvent(level, segment, actual, miner)).isCanceled()) {
+                    if (!TrackWork.mayBreak(server, miner, segment, actual)) {
                         permitted = false;
                         break;
                     }

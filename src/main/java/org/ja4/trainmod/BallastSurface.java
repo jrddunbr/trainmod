@@ -31,7 +31,7 @@ final class BallastSurface {
     }
 
     static boolean covered(BlockState state) {
-        return state.getBlock() instanceof TrackBlock track && track.kind.hasBallast()
+        return TrackBlock.ballasted(state) && state.getBlock() instanceof TrackBlock track
             && track.index(state) < track.shape(state).cells().size();
     }
 

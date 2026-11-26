@@ -169,7 +169,9 @@ final class TrackItem extends Item {
         var changes = new LinkedHashMap<BlockPos, BlockState>();
         List<BlockPos> cells = placement.shape().cells();
         for (int index = 0; index < cells.size(); index++) {
-            changes.put(placement.root().offset(cells.get(index)), block.segment(placement.rotation(), placement.left(), index, placement.diagonalLow()));
+            BlockState state = block.segment(placement.rotation(), placement.left(), index, placement.diagonalLow());
+            if (kind.hasBallast()) state = state.setValue(TrackBlock.CONDITION, TrackBlock.Condition.UNBALLASTED);
+            changes.put(placement.root().offset(cells.get(index)), state);
         }
         return TrackWork.apply(level, player, changes, level.getBlockState(placement.root().below()));
     }

@@ -130,12 +130,24 @@ final class TrackGeometry {
         }
     }
 
-    record Shape(List<BlockPos> cells, List<Path> routes) {}
+    record Shape(List<BlockPos> cells, List<Path> routes) {
+        BlockPos owner(Vec3 point) {
+            BlockPos column = cell(point);
+            for (BlockPos cell : cells) {
+                if (cell.getX() == column.getX() && cell.getZ() == column.getZ()) return cell;
+            }
+            return cells.stream().min(java.util.Comparator.comparingDouble(
+                cell -> Vec3.atLowerCornerOf(cell).distanceToSqr(point))).orElseThrow();
+        }
+    }
+
+    record ColumnSpan(BlockPos column, double start, double end) {}
 
     static final class Path {
         private final List<Vec3> points;
         private final double[] distances;
         final double length;
+        private volatile List<ColumnSpan> columns;
 
         Path(List<Vec3> points) {
             this.points = List.copyOf(points);
@@ -148,6 +160,40 @@ final class TrackGeometry {
 
         List<Vec3> points() {
             return points;
+        }
+
+        List<ColumnSpan> columns() {
+            if (columns != null) return columns;
+            var spans = new ArrayList<ColumnSpan>();
+            for (int i = 1; i < points.size(); i++) {
+                Vec3 from = points.get(i - 1), to = points.get(i);
+                var crossings = new java.util.TreeSet<>(List.of(0.0, 1.0));
+                addColumnCrossings(crossings, from.x + 0.5, to.x + 0.5);
+                addColumnCrossings(crossings, from.z + 0.5, to.z + 0.5);
+                double previous = 0;
+                double segmentLength = distances[i] - distances[i - 1];
+                for (double crossing : crossings.tailSet(0.0, false)) {
+                    if (crossing - previous > 1e-9) {
+                        BlockPos col = cell(from.lerp(to, (previous + crossing) / 2)).atY(0);
+                        double start = distances[i - 1] + previous * segmentLength;
+                        double end = distances[i - 1] + crossing * segmentLength;
+                        if (!spans.isEmpty() && spans.getLast().column().equals(col)) {
+                            start = spans.removeLast().start();
+                        }
+                        spans.add(new ColumnSpan(col, start, end));
+                    }
+                    previous = crossing;
+                }
+            }
+            columns = List.copyOf(spans);
+            return columns;
+        }
+
+        private static void addColumnCrossings(java.util.Set<Double> crossings, double from, double to) {
+            double low = Math.min(from, to), high = Math.max(from, to);
+            for (int edge = (int) Math.floor(low) + 1; edge < high; edge++) {
+                crossings.add((edge - from) / (to - from));
+            }
         }
 
         Vec3 endpoint(boolean end) {

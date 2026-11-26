@@ -1,9 +1,7 @@
 package org.ja4.trainmod;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.TreeSet;
 import java.util.function.DoubleUnaryOperator;
 import java.util.function.DoubleBinaryOperator;
@@ -25,11 +23,18 @@ final class RailMesh {
 
     record Tie(BlockPos owner, int route, int index, double distance, Vec3 center, Vec3 tangent, double halfLength) {}
 
-    static Map<BlockPos, Mesh> fixed(TrackGeometry.Kind kind, TrackGeometry.Shape shape, int banking, List<Tie> ties) {
-        Map<BlockPos, Mesh> meshes = new LinkedHashMap<>();
+    enum Surface { STEEL, WEB, TIE, BALLAST }
+
+    @FunctionalInterface
+    interface QuadSink {
+        void add(BlockPos cell, Surface surface, Vec3 a, Vec3 b, Vec3 c, Vec3 d,
+                 double uStart, double vStart, double uEnd, double vEnd);
+    }
+
+    static void fixed(TrackGeometry.Kind kind, TrackGeometry.Shape shape, int banking, List<Tie> ties, QuadSink sink) {
         var layout = SwitchLayout.of(kind, shape);
         List<Lane> lanes = lanes(shape, layout);
-        List<Frog> frogs = frogs(shape, lanes);
+        List<Frog> frogs = shape.routes().size() > 1 ? frogs(shape, lanes) : List.of();
         for (Lane lane : lanes) {
             var path = shape.routes().get(lane.route);
             var bank = bank(kind, path, banking);
@@ -39,32 +44,31 @@ final class RailMesh {
             for (Frog frog : crossings) {
                 double at = frog.on(lane).distance;
                 double gapStart = Math.max(cursor, at - frog.span);
-                if (gapStart > cursor) stockRail(shape, path, meshes, cursor, gapStart, lane.side, bank);
+                if (gapStart > cursor) stockRail(shape, path, sink, cursor, gapStart, lane.side, bank);
                 cursor = Math.max(cursor, at + frog.span);
             }
-            if (cursor < lane.to) stockRail(shape, path, meshes, cursor, lane.to, lane.side, bank);
+            if (cursor < lane.to) stockRail(shape, path, sink, cursor, lane.to, lane.side, bank);
         }
         for (Tie tie : ties) {
             var bank = bank(kind, shape.routes().get(tie.route), banking);
-            meshes.computeIfAbsent(tie.owner, Mesh::new).tiePlates(tie.center, tie.tangent,
+            new Mesh(tie.owner, sink).tiePlates(tie.center, tie.tangent,
                 across -> bank.applyAsDouble(tie.distance, across));
         }
         for (Frog frog : frogs) {
-            casting(shape, meshes, frog);
-            checkRail(shape, meshes, frog, frog.first, frogs);
-            checkRail(shape, meshes, frog, frog.second, frogs);
+            casting(shape, sink, frog);
+            checkRail(shape, sink, frog, frog.first, frogs);
+            checkRail(shape, sink, frog, frog.second, frogs);
         }
         for (var panel : layout.panels()) {
             var blade = panel.first();
             for (double fraction : new double[]{0.15, 0.30, 0.45}) {
                 double distance = blade.distance(fraction);
                 Vec3 point = blade.path().point(distance);
-                Mesh mesh = meshes.computeIfAbsent(owner(shape, point), Mesh::new);
-                mesh.box("web", point, horizontal(blade.path().tangent(distance)), -0.31, 0.31,
+                Mesh mesh = new Mesh(shape.owner(point), sink);
+                mesh.box(Surface.WEB, point, horizontal(blade.path().tangent(distance)), -0.31, 0.31,
                     0.1727, 0.176, 0.055, SAME_HEIGHT);
             }
         }
-        return meshes;
     }
 
     static List<Tie> ties(TrackGeometry.Kind kind, TrackGeometry.Shape shape) {
@@ -81,7 +85,7 @@ final class RailMesh {
                 // Keep one set of sleepers where routes share the same footprint.
                 if (sharesBed(kind, shape, route, center)) continue;
                 double halfLength = kind.turnout() && route == 0 && at < POINT_END + 0.4 ? 0.64 : 0.44;
-                ties.add(new Tie(owner(shape, center), route, index, at, center, horizontal(path.tangent(at)), halfLength));
+                ties.add(new Tie(shape.owner(center), route, index, at, center, horizontal(path.tangent(at)), halfLength));
             }
         }
         return ties;
@@ -97,9 +101,8 @@ final class RailMesh {
         return false;
     }
 
-    static Map<BlockPos, Mesh> woodTies(TrackGeometry.Kind kind, TrackGeometry.Shape shape, List<Tie> ties,
-                                        int banking, int pattern) {
-        Map<BlockPos, Mesh> meshes = new LinkedHashMap<>();
+    static void woodTies(TrackGeometry.Kind kind, TrackGeometry.Shape shape, List<Tie> ties,
+                         int banking, int pattern, QuadSink sink) {
         for (Tie tie : ties) {
             var variation = TieVariation.forTie(pattern, tie.route, tie.index);
             double angle = Math.toRadians(variation.yaw());
@@ -107,11 +110,10 @@ final class RailMesh {
             double halfLength = tie.halfLength * variation.length();
             var bank = bank(kind, shape.routes().get(tie.route), banking);
             double acrossScale = Math.cos(angle);
-            meshes.computeIfAbsent(tie.owner, Mesh::new).box("tie", tie.center, rotated, -halfLength, halfLength,
-                kind.hasBallast() ? 0.126 : 0, TIE_HEIGHT, TIE_HALF_WIDTH,
+            new Mesh(tie.owner, sink).box(Surface.TIE, tie.center, rotated, -halfLength, halfLength,
+                0, TIE_HEIGHT, TIE_HALF_WIDTH,
                 across -> bank.applyAsDouble(tie.distance, across * acrossScale));
         }
-        return meshes;
     }
 
     private static double bedStart(TrackGeometry.Kind kind, TrackGeometry.Shape shape, int route) {
@@ -194,6 +196,8 @@ final class RailMesh {
     }
 
     private static Frog intersection(Lane first, Lane second, RailEdge a, RailEdge b) {
+        if (separate(a.start.x, a.end.x, b.start.x, b.end.x)
+            || separate(a.start.z, a.end.z, b.start.z, b.end.z)) return null;
         Vec3 deltaA = a.end.subtract(a.start), deltaB = b.end.subtract(b.start);
         double divisor = cross(deltaA, deltaB);
         double sine = Math.abs(divisor) / (deltaA.length() * deltaB.length());
@@ -211,9 +215,13 @@ final class RailMesh {
             a.start.add(deltaA.scale(alongA)), span);
     }
 
+    private static boolean separate(double a, double b, double c, double d) {
+        return Math.max(a, b) + 1e-12 < Math.min(c, d) || Math.max(c, d) + 1e-12 < Math.min(a, b);
+    }
+
     private static double cross(Vec3 a, Vec3 b) { return a.x * b.z - a.z * b.x; }
 
-    private static void casting(TrackGeometry.Shape shape, Map<BlockPos, Mesh> meshes, Frog frog) {
+    private static void casting(TrackGeometry.Shape shape, QuadSink sink, Frog frog) {
         Vec3 center = frog.point;
         Vec3 along = frog.first.heading;
         Vec3 across = lateral(along);
@@ -222,15 +230,15 @@ final class RailMesh {
             across.scale(0.127).subtract(along.scale(frog.span)));
         footprint = strip(footprint, frog.second.heading, frog.span);
         footprint = strip(footprint, lateral(frog.second.heading), 0.127);
-        Mesh mesh = meshes.computeIfAbsent(owner(shape, center), Mesh::new);
-        mesh.prism("web", center, footprint, 0.175, 0.206);
+        Mesh mesh = new Mesh(shape.owner(center), sink);
+        mesh.prism(Surface.WEB, center, footprint, 0.175, 0.206);
         for (boolean gaugeA : new boolean[]{false, true}) {
             for (boolean gaugeB : new boolean[]{false, true}) {
                 // Cut both flangeways through the casting down to the web. The remaining
                 // raised sectors form the noses and the wing-rail running surfaces.
                 var wing = flangeway(footprint, frog.first.gaugeSide(), gaugeA);
                 wing = flangeway(wing, frog.second.gaugeSide(), gaugeB);
-                mesh.prism("frog", center, wing, 0.204, 0.25);
+                mesh.prism(Surface.STEEL, center, wing, 0.204, 0.25);
             }
         }
     }
@@ -258,7 +266,7 @@ final class RailMesh {
         return result;
     }
 
-    private static void checkRail(TrackGeometry.Shape shape, Map<BlockPos, Mesh> meshes, Frog frog, Crossing crossing,
+    private static void checkRail(TrackGeometry.Shape shape, QuadSink sink, Frog frog, Crossing crossing,
                                   List<Frog> frogs) {
         Lane lane = crossing.lane;
         var path = shape.routes().get(lane.route);
@@ -266,9 +274,9 @@ final class RailMesh {
         double start = Math.max(0, crossing.distance - size), end = Math.min(path.length, crossing.distance + size);
         if (frogs.stream().anyMatch(other -> opposingFrog(other.first, lane, start, end)
             || opposingFrog(other.second, lane, start, end))) return;
-        sweep(shape, path, meshes, start, end, at -> -lane.side + Math.copySign(
+        sweep(shape, path, sink, start, end, at -> -lane.side + Math.copySign(
             0.109 + Math.max(0, Math.abs(at - crossing.distance) / size - 0.68) * 0.10, lane.side), d -> 0.53,
-            "guard", FLAT, -0.019);
+            Surface.STEEL, FLAT, -0.019);
     }
 
     private static boolean opposingFrog(Crossing crossing, Lane lane, double start, double end) {
@@ -276,14 +284,13 @@ final class RailMesh {
             && crossing.distance > start - 0.18 && crossing.distance < end + 0.18;
     }
 
-    private static void stockRail(TrackGeometry.Shape shape, TrackGeometry.Path path, Map<BlockPos, Mesh> meshes,
+    private static void stockRail(TrackGeometry.Shape shape, TrackGeometry.Path path, QuadSink sink,
                                   double start, double end, double side, DoubleBinaryOperator bank) {
-        sweep(shape, path, meshes, start, end, distance -> side, distance -> 1, "steel", bank, 0);
+        sweep(shape, path, sink, start, end, distance -> side, distance -> 1, Surface.STEEL, bank, 0);
     }
 
     /** The covered foundation is rendered with the rail so both shoulders follow the same path. */
-    static Map<BlockPos, Mesh> roadbed(TrackGeometry.Kind kind, TrackGeometry.Shape shape, boolean raised, int banking) {
-        Map<BlockPos, Mesh> meshes = new LinkedHashMap<>();
+    static void roadbed(TrackGeometry.Kind kind, TrackGeometry.Shape shape, boolean raised, int banking, QuadSink sink) {
         var bed = BallastProfile.bed(raised);
         for (int route = 0; route < shape.routes().size(); route++) {
             TrackGeometry.Path path = shape.routes().get(route);
@@ -297,13 +304,13 @@ final class RailMesh {
             for (int i = 1; i < cuts.size(); i++) {
                 double from = cuts.get(i - 1);
                 double to = cuts.get(i);
-                BlockPos cell = owner(shape, path.point((from + to) / 2));
-                Mesh mesh = meshes.computeIfAbsent(cell, pos -> new Mesh(pos, false));
+                BlockPos cell = shape.owner(path.point((from + to) / 2));
+                Mesh mesh = new Mesh(cell, sink);
                 boolean highGrade = kind.grade() && cell.getY() == 1;
                 double base = cell.getY() - (raised || highGrade ? 1 : 0);
                 boolean capStart = (raised || highGrade) && !cell.equals(prior) && from > 1e-7;
                 boolean capEnd = (raised || highGrade) && to < path.length - 1e-7 && (i == cuts.size() - 1
-                    || !cell.equals(owner(shape, path.point((to + cuts.get(i + 1)) / 2))));
+                    || !cell.equals(shape.owner(path.point((to + cuts.get(i + 1)) / 2))));
                 for (int j = 1; j < bed.length; j++) {
                     Vec3 a = roadbedPoint(path, from, bed[j - 1], lift, cell, raised, kind, bank);
                     Vec3 b = roadbedPoint(path, to, bed[j - 1], lift, cell, raised, kind, bank);
@@ -311,18 +318,17 @@ final class RailMesh {
                     Vec3 d = roadbedPoint(path, from, bed[j], lift, cell, raised, kind, bank);
                     mesh.gravel(a, b, c, d, bed[j - 1].across() + 1.5, bed[j].across() + 1.5, from, to);
                     if (capStart) {
-                        mesh.face("ballast", a, d, d.with(Direction.Axis.Y, base),
+                        mesh.face(Surface.BALLAST, a, d, d.with(Direction.Axis.Y, base),
                             a.with(Direction.Axis.Y, base));
                     }
                     if (capEnd) {
-                        mesh.face("ballast", b, b.with(Direction.Axis.Y, base),
+                        mesh.face(Surface.BALLAST, b, b.with(Direction.Axis.Y, base),
                             c.with(Direction.Axis.Y, base), c);
                     }
                 }
                 prior = cell;
             }
         }
-        return meshes;
     }
 
     private static Vec3 roadbedPoint(TrackGeometry.Path path, double distance, BallastProfile.Section profile,
@@ -385,132 +391,82 @@ final class RailMesh {
         }
     }
 
-    private static void sweep(TrackGeometry.Shape shape, TrackGeometry.Path path, Map<BlockPos, Mesh> meshes,
+    private static void sweep(TrackGeometry.Shape shape, TrackGeometry.Path path, QuadSink sink,
                               double start, double end, DoubleUnaryOperator side, DoubleUnaryOperator thickness,
-                              String material, DoubleBinaryOperator bank, double verticalOffset) {
+                              Surface surface, DoubleBinaryOperator bank, double verticalOffset) {
         List<Double> cuts = roadbedCuts(path, start, end);
-        DoubleUnaryOperator height = ignored -> verticalOffset;
+        var next = new Vec3[RAIL.length];
+        var previous = new Vec3[RAIL.length];
+        section(path, start, side, thickness, bank, verticalOffset, previous);
         for (int i = 1; i < cuts.size(); i++) {
             double from = cuts.get(i - 1);
             double to = cuts.get(i);
-            Mesh mesh = meshes.computeIfAbsent(owner(shape, path.point((from + to) / 2)), Mesh::new);
+            Mesh mesh = new Mesh(shape.owner(path.point((from + to) / 2)), sink);
+            section(path, to, side, thickness, bank, verticalOffset, next);
             for (int j = 1; j < RAIL.length; j++) {
-                var a = RAIL[j - 1];
-                var b = RAIL[j];
-                mesh.face(Math.max(a.height(), b.height()) < 0.229 ? "web" : material,
-                    section(path, from, a, side.applyAsDouble(from), height, thickness, bank),
-                    section(path, to, a, side.applyAsDouble(to), height, thickness, bank),
-                    section(path, to, b, side.applyAsDouble(to), height, thickness, bank),
-                    section(path, from, b, side.applyAsDouble(from), height, thickness, bank));
+                Surface face = Math.max(RAIL[j - 1].height(), RAIL[j].height()) < 0.229 ? Surface.WEB : surface;
+                mesh.face(face, previous[j - 1], next[j - 1], next[j], previous[j]);
             }
+            var reuse = previous;
+            previous = next;
+            next = reuse;
         }
     }
 
-    private static Vec3 section(TrackGeometry.Path path, double at, RailProfile.Section profile, double side,
-                                DoubleUnaryOperator height, DoubleUnaryOperator thickness, DoubleBinaryOperator bank) {
+    private static void section(TrackGeometry.Path path, double at, DoubleUnaryOperator side,
+                                DoubleUnaryOperator thickness, DoubleBinaryOperator bank, double height, Vec3[] out) {
         Vec3 position = path.point(at);
-        Vec3 tangent = path.tangent(at).multiply(1, 0, 1).normalize();
-        double across = side + profile.across() * thickness.applyAsDouble(at);
-        return position.add(new Vec3(tangent.z, 0, -tangent.x).scale(across))
-            .add(0, profile.height() + height.applyAsDouble(at) + bank.applyAsDouble(at, across), 0);
+        Vec3 acrossTrack = lateral(horizontal(path.tangent(at)));
+        double offset = side.applyAsDouble(at);
+        double width = thickness.applyAsDouble(at);
+        for (int i = 0; i < RAIL.length; i++) {
+            var profile = RAIL[i];
+            double across = offset + profile.across() * width;
+            out[i] = position.add(acrossTrack.scale(across)).add(0, profile.height() + height + bank.applyAsDouble(at, across), 0);
+        }
     }
 
-    private static BlockPos owner(TrackGeometry.Shape shape, Vec3 point) {
-        BlockPos cell = TrackGeometry.cell(point);
-        return shape.cells().stream().filter(pos -> pos.getX() == cell.getX() && pos.getZ() == cell.getZ())
-            .findFirst().orElseGet(() -> shape.cells().stream()
-                .min(java.util.Comparator.comparingDouble(pos -> Vec3.atLowerCornerOf(pos).distanceToSqr(point)))
-                .orElseThrow());
-    }
-
-    static final class Mesh {
-        private final BlockPos owner;
-        private final boolean shadeQuads;
-        private final StringBuilder text;
-        private int vertex = 1;
-        private int uv = 5;
-        private String currentMaterial;
-
-        Mesh(BlockPos owner) { this(owner, true); }
-
-        Mesh(BlockPos owner, boolean shadeQuads) {
-            this(owner, shadeQuads, "railway");
-        }
-
-        Mesh(BlockPos owner, boolean shadeQuads, String materialLibrary) {
-            this.owner = owner;
-            this.shadeQuads = shadeQuads;
-            String object = materialLibrary.equals("railway") ? "rail" : materialLibrary;
-            text = new StringBuilder("mtllib trainmod:models/block/" + materialLibrary + ".mtl\no " + object + "\n"
-                + "vt 0 0\nvt 0 1\nvt 1 1\nvt 1 0\n");
-        }
-
-        boolean shadeQuads() { return shadeQuads; }
-
+    private record Mesh(BlockPos owner, QuadSink sink) {
         void gravel(Vec3 a, Vec3 b, Vec3 c, Vec3 d, double uStart, double uEnd, double vStart, double vEnd) {
             double uTile = Math.floor(uStart + 1e-8);
             double vTile = Math.floor(vStart + 1e-8);
-            mapped("ballast", a, b, c, d, uStart - uTile, vStart - vTile, uEnd - uTile, vEnd - vTile);
+            mapped(Surface.BALLAST, a, b, c, d, uStart - uTile, vStart - vTile, uEnd - uTile, vEnd - vTile);
         }
 
-        void mapped(String material, Vec3 a, Vec3 b, Vec3 c, Vec3 d,
+        void mapped(Surface surface, Vec3 a, Vec3 b, Vec3 c, Vec3 d,
                     double uStart, double vStart, double uEnd, double vEnd) {
-            for (double[] coordinates : new double[][]{{uStart, vStart}, {uStart, vEnd}, {uEnd, vEnd}, {uEnd, vStart}}) {
-                text.append("vt ").append(decimal(coordinates[0])).append(' ')
-                    .append(decimal(coordinates[1])).append('\n');
-            }
-            face(material, a, b, c, d, uv);
-            uv += 4;
+            sink.add(owner, surface, a, b, c, d, uStart, vStart, uEnd, vEnd);
         }
 
-        void face(String material, Vec3 a, Vec3 b, Vec3 c, Vec3 d) {
-            face(material, a, b, c, d, 1);
+        void face(Surface surface, Vec3 a, Vec3 b, Vec3 c, Vec3 d) {
+            mapped(surface, a, b, c, d, 0, 0, 1, 1);
         }
 
-        private void face(String material, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int uvIndex) {
-            if (!material.equals(currentMaterial)) {
-                text.append("usemtl ").append(material).append('\n');
-                currentMaterial = material;
-            }
-            for (Vec3 point : new Vec3[]{a, b, c, d}) {
-                text.append("v ").append(decimal(point.x - owner.getX() + 0.5)).append(' ')
-                    .append(decimal(point.y - owner.getY())).append(' ')
-                    .append(decimal(point.z - owner.getZ() + 0.5)).append('\n');
-            }
-            text.append("f");
-            for (int i = 0; i < 4; i++) text.append(' ').append(vertex++).append('/').append(uvIndex + i);
-            text.append('\n');
-        }
-
-        void prism(String material, Vec3 center, List<Vec3> points, double low, double high) {
+        void prism(Surface surface, Vec3 center, List<Vec3> points, double low, double high) {
             if (points.size() < 3) return;
             Vec3 anchor = points.getFirst().add(center).add(0, high, 0);
             for (int i = 1; i + 1 < points.size(); i++) {
                 Vec3 b = points.get(i).add(center).add(0, high, 0);
                 Vec3 c = points.get(i + 1).add(center).add(0, high, 0);
                 if (b.subtract(anchor).cross(c.subtract(anchor)).lengthSqr() > 1e-12) {
-                    face(material, anchor, b, c, c);
+                    face(surface, anchor, b, c, c);
                 }
             }
             Vec3 down = new Vec3(0, low - high, 0);
             for (int i = 0; i < points.size(); i++) {
                 Vec3 a = points.get(i).add(center).add(0, high, 0);
                 Vec3 b = points.get((i + 1) % points.size()).add(center).add(0, high, 0);
-                if (a.distanceToSqr(b) > 1e-12) face(material, a.add(down), b.add(down), b, a);
+                if (a.distanceToSqr(b) > 1e-12) face(surface, a.add(down), b.add(down), b, a);
             }
-        }
-
-        private static String decimal(double value) {
-            return Double.toString(Math.round(value * 100_000) / 100_000.0);
         }
 
         void tiePlates(Vec3 center, Vec3 heading, DoubleUnaryOperator bank) {
             for (double side : new double[]{-GAUGE, GAUGE}) {
-                box("web", center, heading, side - 0.055, side + 0.055, 0.1725, 0.183, 0.052, bank);
+                box(Surface.WEB, center, heading, side - 0.055, side + 0.055, 0.1725, 0.183, 0.052, bank);
             }
         }
 
-        private void box(String material, Vec3 center, Vec3 heading, double min, double max,
+        private void box(Surface surface, Vec3 center, Vec3 heading, double min, double max,
                          double bottom, double top, double halfDepth, DoubleUnaryOperator bank) {
             Vec3 left = new Vec3(heading.z, 0, -heading.x);
             Vec3 back = heading.scale(-halfDepth);
@@ -520,7 +476,7 @@ final class RailMesh {
             Vec3 c = center.add(front).add(left.scale(max)).add(0, top + bank.applyAsDouble(max), 0);
             Vec3 d = center.add(back).add(left.scale(max)).add(0, top + bank.applyAsDouble(max), 0);
             Vec3 down = new Vec3(0, bottom - top, 0);
-            if (material.equals("tie")) {
+            if (surface == Surface.TIE) {
                 double width = max - min;
                 double depth = 8 * halfDepth;
                 double height = 4 * (top - bottom);
@@ -531,24 +487,22 @@ final class RailMesh {
                     Vec3 q = b.lerp(c, i / width);
                     Vec3 r = b.lerp(c, (i + u) / width);
                     Vec3 s = a.lerp(d, (i + u) / width);
-                    mapped(material, p, q, r, s, 0, 0, u, depth / 4);
-                    mapped(material, p, s, s.add(down), p.add(down), 0, 0, height / 4, u);
-                    mapped(material, q.add(down), r.add(down), r, q, 0, 0, height / 4, u);
+                    mapped(surface, p, q, r, s, 0, 0, u, depth / 4);
+                    mapped(surface, p, s, s.add(down), p.add(down), 0, 0, height / 4, u);
+                    mapped(surface, q.add(down), r.add(down), r, q, 0, 0, height / 4, u);
                     if (bottom == 0) {
-                        mapped(material, q.add(down), p.add(down), s.add(down), r.add(down), 0, 0, u, depth / 4);
+                        mapped(surface, q.add(down), p.add(down), s.add(down), r.add(down), 0, 0, u, depth / 4);
                     }
                 }
-                mapped(material, a.add(down), b.add(down), b, a, 0, 0, height / 4, depth / 4);
-                mapped(material, d, c, c.add(down), d.add(down), 0, 0, height / 4, depth / 4);
+                mapped(surface, a.add(down), b.add(down), b, a, 0, 0, height / 4, depth / 4);
+                mapped(surface, d, c, c.add(down), d.add(down), 0, 0, height / 4, depth / 4);
             } else {
-                face(material, a, b, c, d);
-                face(material, a.add(down), b.add(down), b, a);
-                face(material, d, c, c.add(down), d.add(down));
-                face(material, a, d, d.add(down), a.add(down));
-                face(material, b.add(down), c.add(down), c, b);
+                face(surface, a, b, c, d);
+                face(surface, a.add(down), b.add(down), b, a);
+                face(surface, d, c, c.add(down), d.add(down));
+                face(surface, a, d, d.add(down), a.add(down));
+                face(surface, b.add(down), c.add(down), c, b);
             }
         }
-
-        String contents() { return text.toString(); }
     }
 }

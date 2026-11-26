@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import javax.imageio.ImageIO;
@@ -34,163 +35,24 @@ public final class TrainAssets {
         assets.recipes();
     }
 
-    private static final Map<String, String> TRACK_TEXTURES = Map.of(
-        "ballast", "minecraft:block/gravel", "tie", "trainmod:block/creosote",
-        "steel", "trainmod:block/steel_head", "web", "trainmod:block/steel_web",
-        "frog", "trainmod:block/steel_head", "guard", "trainmod:block/steel_head",
-        "particle", "minecraft:block/gravel");
-
     private void rails() throws IOException {
-        StringBuilder material = new StringBuilder();
-        for (String name : List.of("ballast", "tie", "steel", "web", "frog", "guard")) {
-            material.append("newmtl ").append(name).append("\nKd 1 1 1\nmap_Kd #").append(name).append("\n");
-        }
-        writeText("assets/trainmod/models/block/railway.mtl", material.toString());
         texture("block/creosote", 0x604435, 16);
         texture("block/steel_head", 0xa4a6a5, 16);
         texture("block/steel_web", 0x524948, 16);
-        model("track/end_material", Map.of("particle", "trainmod:block/steel_head"), List.of());
         for (TrackGeometry.Kind kind : TrackGeometry.Kind.values()) {
             String id = kind.id() + "_rail";
-            JsonArray parts = new JsonArray();
-            trackModels(kind, id, true, false, parts);
-            if (kind.crossing() || kind.parallelTurnout()) trackModels(kind, id, false, false, parts);
-            if (kind.gradedCurve()) trackModels(kind, id, true, true, parts);
-            write("assets/trainmod/blockstates/" + id + ".json", Map.of("multipart", parts));
+            write("assets/trainmod/blockstates/" + id + ".json", Map.of("variants",
+                Map.of("", Map.of("type", "trainmod:procedural_track"))));
             if (kind.hasKit()) trackItem(kind, id);
             trackLoot(id, switch (kind) {
                 case DIAGONAL -> "straight_rail";
-                case UNBALLASTED_STRAIGHT -> "bridge_straight_rail";
+                case UNBALLASTED_STRAIGHT -> "straight_rail";
                 default -> id;
             });
         }
     }
 
-    private void trackModels(TrackGeometry.Kind kind, String id, boolean compact, boolean diagonalLow, JsonArray parts) throws IOException {
-        for (int rotation : kind.rotations()) {
-            if (!compact && !kind.compactGeometry(rotation)) continue;
-            List<Integer> acceptedRotations = new ArrayList<>();
-            for (int state = 0; state < 16; state++) {
-                if (kind.shape(state, true, compact, diagonalLow) == kind.shape(rotation, true, compact, diagonalLow)) {
-                    acceptedRotations.add(state);
-                }
-            }
-            boolean handed = kind.mirrored();
-            for (boolean left : handed ? new boolean[]{true, false} : new boolean[]{true}) {
-                TrackGeometry.Shape shape = kind.shape(rotation, left, compact, diagonalLow);
-                var ties = RailMesh.ties(kind, shape);
-                var tiePatterns = new ArrayList<List<Map<BlockPos, RailMesh.Mesh>>>();
-                for (int pattern = 0; pattern < TieVariation.PATTERNS; pattern++) tiePatterns.add(new ArrayList<>());
-                var meshes = new ArrayList<Map<BlockPos, RailMesh.Mesh>>();
-                var beds = new ArrayList<Map<BlockPos, RailMesh.Mesh>>();
-                var joinedBeds = new ArrayList<Map<BlockPos, RailMesh.Mesh>>();
-                int variants = kind.bankedCurve() ? CurveBanking.VARIANTS : 1;
-                for (int variant = 0; variant < variants; variant++) {
-                    int banking = kind.bankedCurve() ? variant : -1;
-                    meshes.add(RailMesh.fixed(kind, shape, banking, ties));
-                    for (int pattern = 0; pattern < TieVariation.PATTERNS; pattern++) {
-                        tiePatterns.get(pattern).add(RailMesh.woodTies(kind, shape, ties, banking, pattern));
-                    }
-                    if (kind.hasBallast()) {
-                        beds.add(RailMesh.roadbed(kind, shape, false, banking));
-                        joinedBeds.add(RailMesh.roadbed(kind, shape, true, banking));
-                    }
-                }
-                String prefix = "track/" + id + "/" + rotation + (left ? "_l" : "_r") + (compact ? "" : "_legacy") + (diagonalLow ? "_diagonal_low" : "");
-                String filter = String.join("|", acceptedRotations.stream().map(Object::toString).toList());
-                String hand = handed ? (left ? "left" : "right") : "left|right";
-                for (int i = 0; i < shape.cells().size(); i++) {
-                    BlockPos cell = shape.cells().get(i);
-                    String name = prefix + "_" + i;
-                    var condition = new HashMap<>(Map.of("rotation", filter, "type", hand, "segment", Integer.toString(i)));
-                    if (kind.compactGeometry(rotation)) condition.put("compact", Boolean.toString(compact));
-                    if (kind.gradedCurve()) condition.put("diagonal_low", Boolean.toString(diagonalLow));
-                    if (tiePatterns.getFirst().getFirst().containsKey(cell)) {
-                        var patterns = new ArrayList<List<Map<String, Object>>>();
-                        for (int pattern = 0; pattern < TieVariation.PATTERNS; pattern++) {
-                            var options = tiePatterns.get(pattern);
-                            String tieName = name + "_ties_" + pattern;
-                            if (kind.bankedCurve()) {
-                                patterns.add(variants(tieName, options, cell));
-                            } else {
-                                obj(tieName, options.getFirst().get(cell), kind.hasBallast());
-                                patterns.add(List.of(ref(tieName)));
-                            }
-                        }
-                        parts.add(JSON.toJsonTree(Map.of("when", condition, "apply",
-                            Map.of("type", "trainmod:track_ties", "patterns", patterns))));
-                    }
-                    if (kind.bankedCurve()) {
-                        var rails = variants(name, meshes, cell);
-                        var normal = variants(name + "_bed", beds, cell);
-                        var raised = variants(name + "_joined_bed", joinedBeds, cell);
-                        parts.add(JSON.toJsonTree(Map.of("when", condition, "apply",
-                            Map.of("type", "trainmod:banked_curve", "models", rails))));
-                        parts.add(JSON.toJsonTree(Map.of("when", condition, "apply",
-                            Map.of("type", "trainmod:banked_curve", "models", normal, "raised", raised, "grounded", true))));
-                    } else {
-                        RailMesh.Mesh mesh = meshes.getFirst().get(cell);
-                        if (mesh != null) {
-                            obj(name, mesh, kind.hasBallast());
-                            parts.add(JSON.toJsonTree(Map.of("when", condition, "apply", ref(name))));
-                        }
-                        if (kind.hasBallast() && beds.getFirst().containsKey(cell)) {
-                            obj(name + "_bed", beds.getFirst().get(cell));
-                            obj(name + "_joined_bed", joinedBeds.getFirst().get(cell));
-                            parts.add(JSON.toJsonTree(Map.of("when", condition, "apply",
-                                Map.of("type", "trainmod:adjacent_ballast", "separate", ref(name + "_bed"),
-                                    "joined", ref(name + "_joined_bed")))));
-                        }
-                    }
-                    if (!TrackEnds.ports(shape, cell).isEmpty()) {
-                        parts.add(JSON.toJsonTree(Map.of("when", condition, "apply",
-                            Map.of("type", "trainmod:rail_ends", "base", ref("track/end_material")))));
-                    }
-                }
-
-            }
-        }
-    }
-
-    private List<Map<String, Object>> variants(String name, List<Map<BlockPos, RailMesh.Mesh>> options,
-                                                BlockPos cell) throws IOException {
-        Map<String, Map<String, Object>> unique = new HashMap<>();
-        var refs = new ArrayList<Map<String, Object>>();
-        for (int variant = 0; variant < options.size(); variant++) {
-            RailMesh.Mesh mesh = options.get(variant).get(cell);
-            if (mesh == null) {
-                var empty = "track/empty";
-                model(empty, Map.of("particle", "minecraft:block/gravel"), List.of());
-                refs.add(ref(empty));
-                continue;
-            }
-            String contents = mesh.contents();
-            var entry = unique.get(contents);
-            if (entry == null) {
-                String id = name + "_bank_" + variant;
-                obj(id, mesh);
-                entry = ref(id);
-                unique.put(contents, entry);
-            }
-            refs.add(entry);
-        }
-        return refs;
-    }
-
-    private void obj(String name, RailMesh.Mesh mesh) throws IOException {
-        obj(name, mesh, true);
-    }
-
-    private void obj(String name, RailMesh.Mesh mesh, boolean hasBallast) throws IOException {
-        Map<String, String> textures = TRACK_TEXTURES;
-        if (!hasBallast) {
-            textures = new HashMap<>(TRACK_TEXTURES);
-            textures.put("particle", TRACK_TEXTURES.get("tie"));
-        }
-        obj(name, mesh, textures, false);
-    }
-
-    private void obj(String name, RailMesh.Mesh mesh, Map<String, String> textures, boolean inventory) throws IOException {
+    private void obj(String name, ObjMesh mesh, Map<String, String> textures, boolean inventory) throws IOException {
         String path = "models/block/" + name;
         writeText("assets/trainmod/" + path + ".obj", mesh.contents());
         var settings = new HashMap<String, Object>(Map.of("loader", "neoforge:obj",
@@ -213,8 +75,7 @@ public final class TrainAssets {
         double scale = Math.min(3.0, 6.0 / Math.max(1, maxX));
         double far = routes.stream().flatMap(path -> path.points().stream()).mapToDouble(point -> point.z).max().orElse(1);
         double near = routes.stream().flatMap(path -> path.points().stream()).mapToDouble(point -> point.z).min().orElse(0);
-        for (int layer = 0; layer < 3; layer++) {
-            if (layer == 0 && !kind.hasBallast()) continue;
+        for (int layer = 1; layer < 3; layer++) {
             graphics.setColor(new java.awt.Color(new int[]{0x777168, 0x664938, 0xbfc0b8}[layer]));
             graphics.setStroke(new java.awt.BasicStroke(layer == 0 ? 5 : layer == 1 ? 4 : 1));
             for (TrackGeometry.Path path : routes) {
@@ -238,7 +99,9 @@ public final class TrainAssets {
     private void trackLoot(String id, String item) throws IOException {
         write("data/trainmod/loot_table/blocks/" + id + ".json", Map.of("type", "minecraft:block", "pools",
             List.of(Map.of("rolls", 1, "conditions", List.of(Map.of("condition", "minecraft:survives_explosion"),
-                Map.of("condition", "minecraft:block_state_property", "block", "trainmod:" + id, "properties", Map.of("segment", "0"))),
+                Map.of("condition", "minecraft:block_state_property", "block", "trainmod:" + id, "properties", Map.of("segment", "0")),
+                Map.of("condition", "minecraft:inverted", "term", Map.of("condition", "minecraft:block_state_property",
+                    "block", "trainmod:" + id, "properties", Map.of("condition", "broken")))),
                 "entries", List.of(Map.of("type", "minecraft:item", "name", "trainmod:" + item))))));
     }
 
@@ -425,7 +288,7 @@ public final class TrainAssets {
 
     private void wideGirderModels(Map<String, String> steel) throws IOException {
         var textures = new HashMap<>(steel);
-        textures.put("tie", TRACK_TEXTURES.get("tie"));
+        textures.put("tie", "trainmod:block/creosote");
         model("wide_steel_girder_empty", steel, List.of());
         var states = new HashMap<String, Object>();
         var inventory = new ArrayList<Map<String, Object>>();
@@ -632,6 +495,7 @@ public final class TrainAssets {
     }
 
     private void vehicles() throws IOException {
+        Set<String> panelTextures = new HashSet<>();
         for (TrainVehicle.Kind kind : TrainVehicle.Kind.values()) {
             List<Map<String, Object>> boxes = new ArrayList<>();
             Map<String, String> textures = new HashMap<>();
@@ -649,17 +513,30 @@ public final class TrainAssets {
                 var box = face.bounds();
                 int color = box.color();
                 String key = Integer.toHexString(color);
-                textures.put(key, "trainmod:block/paint/" + key);
-                if (paint.add(color)) {
-                    texture("block/paint/" + key, color, 16);
+                var panel = face.panel();
+                Map<String, Object> faceModel = new HashMap<>();
+                if (panel == null) {
+                    if (paint.add(color)) texture("block/paint/" + key, color, 16);
+                } else {
+                    var pattern = VehiclePaint.Pattern.of(face.source());
+                    var region = VehiclePaint.REGIONS.get(pattern);
+                    key += "_" + panel.name().toLowerCase(Locale.ROOT) + "_" + region.x() + "_" + region.y();
+                    if (panelTextures.add(key)) vehiclePanelTexture(key, pattern, color);
+                    float u0 = pattern.itemU(face.panelU(box.x(), box.z()));
+                    float u1 = pattern.itemU(face.panelU(box.x() + box.width(), box.z() + box.length()));
+                    float v0 = pattern.itemV(face.panelV(box.y(), box.z()));
+                    float v1 = pattern.itemV(face.panelV(box.y() + box.height(), box.z() + box.length()));
+                    faceModel.put("uv", List.of(Math.min(u0, u1), Math.min(v0, v1), Math.max(u0, u1), Math.max(v0, v1)));
                 }
+                textures.put(key, "trainmod:block/paint/" + key);
+                faceModel.put("texture", "#" + key);
                 float scale = 0.43f;
                 double x = box.x() * scale + 8;
                 double y = box.y() * scale;
                 double z = box.z() * scale + 8;
                 boxes.add(Map.of("from", List.of(x, y, z),
                     "to", List.of(x + box.width() * scale, y + box.height() * scale, z + box.length() * scale),
-                    "faces", Map.of(face.direction().getName(), Map.of("texture", "#" + key))));
+                    "faces", Map.of(face.direction().getName(), faceModel)));
             }
             textures.put("particle", textures.values().iterator().next());
             write("assets/trainmod/models/item/" + kind.id() + ".json",
@@ -667,6 +544,79 @@ public final class TrainAssets {
             item(kind.id(), "item/" + kind.id());
         }
         texture("entity/paint", 0xf8f8f8, 128);
+        vehiclePaintAtlas();
+    }
+
+    private void vehiclePanelTexture(String key, VehiclePaint.Pattern pattern, int color) throws IOException {
+        int width = pattern.itemWidth(), height = pattern.itemHeight(), padding = VehiclePaint.PADDING;
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int shade = panelShade(pattern, x - padding, y - padding);
+                image.setRGB(x, y, 0xff000000 | (color >> 16) * shade / 255 << 16
+                    | ((color >> 8) & 255) * shade / 255 << 8 | (color & 255) * shade / 255);
+            }
+        }
+        saveImage("block/paint/" + key, image);
+    }
+
+    private void vehiclePaintAtlas() throws IOException {
+        int width = VehiclePaint.ATLAS_WIDTH, height = VehiclePaint.ATLAS_HEIGHT, padding = VehiclePaint.PADDING;
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < 128; x++) image.setRGB(x, y, grey(248 + paintNoise(x, y)));
+        }
+        for (var entry : VehiclePaint.REGIONS.entrySet()) {
+            var pattern = entry.getKey();
+            var region = entry.getValue();
+            // Repeat edge pixels in the gaps between panels for texture filtering.
+            for (int y = -padding; y < pattern.pixelHeight() + padding; y++) {
+                for (int x = -padding; x < pattern.pixelWidth() + padding; x++) {
+                    image.setRGB(region.x() + x, region.y() + y, grey(panelShade(pattern, x, y)));
+                }
+            }
+        }
+        saveImage("entity/vehicle_paint", image);
+    }
+
+    private static int panelShade(VehiclePaint.Pattern pattern, int x, int y) {
+        x = Math.clamp(x, 0, pattern.pixelWidth() - 1);
+        y = Math.clamp(y, 0, pattern.pixelHeight() - 1);
+        double u = Math.min(1, (x + 0.5) / (pattern.width() * VehiclePaint.TEXELS_PER_UNIT));
+        double v = Math.min(1, (y + 0.5) / (pattern.height() * VehiclePaint.TEXELS_PER_UNIT));
+        int noise = paintNoise(x, y);
+        int shade = switch (pattern.panel()) {
+            case FLAT_SILL -> 241 + rib(u * 36, 1.0, 5, 15, 24, 33) - (v < 0.10 || v > 0.84 ? 16 : 0);
+            case GONDOLA_WALL -> v < 0.70 ? 239 + rib(u * 36, 0.48, 3.45, 8.45, 13.45, 18.45, 23.45, 28.45, 33.45)
+                : 221 + rib(u * 36, 1.0, 5, 15, 24, 33) - (v > 0.92 ? 16 : 0);
+            case BOXCAR_WALL -> 232 + rib(u * 11, 0.38, 1.55, 6.25) - (v < 0.08 || v > 0.92 ? 16 : 0);
+            case BOXCAR_DOOR -> 241 + rib(u * 11.9, 0.24, 1, 3, 5, 7, 9, 11) - (v < 0.08 || v > 0.91 ? 22 : 0);
+            case DIESEL_VENTS -> v > 0.19 && v < 0.72 ? 238 + rib(u * 13, 0.34, 1.28, 3.28, 5.28, 7.28, 9.28) * 2 : 248;
+            case DECK -> {
+                double plank = v * 12;
+                yield (plank % 1 < 0.13 ? 148 : (int) plank % 2 == 0 ? 248 : 222)
+                    + 2 * Math.floorMod(x / 8 ^ y * 11, 7) - 6;
+            }
+            case TENDER_COAL -> 112 + Math.floorMod(x / 4 * 17 ^ y / 2 * 41, 112) + 4 * noise;
+            case TENDER_SIDE -> v > 0.55 && v < 0.97 ? 242 : 194;
+        };
+        return Math.clamp(shade + noise, 0, 255);
+    }
+
+    private static int rib(double along, double halfWidth, double... centers) {
+        for (double center : centers) {
+            double offset = (along - center) / halfWidth;
+            if (Math.abs(offset) <= 1) return offset < -0.46 ? 16 : offset > 0.30 ? -74 : -22;
+        }
+        return 0;
+    }
+
+    private static int grey(int shade) {
+        return 0xff000000 | shade << 16 | shade << 8 | shade;
+    }
+
+    private static int paintNoise(int x, int y) {
+        return Math.floorMod(x * 23 ^ y * 59 ^ (x / 3 + y / 3) * 17, 11) - 5;
     }
 
     private void tools() throws IOException {
@@ -696,6 +646,10 @@ public final class TrainAssets {
         graphics.drawLine(9, 12, 12, 1);
         graphics.dispose();
         generatedItem("tie_bundle", ties);
+        tool("track_scrap", List.of("................", "................", "..ss............", "..dhd..hh.......",
+            "...ds.shsd......", "..ddshsssd......", "..hdshsdd..h....", "...dssdd..hsd...",
+            "...sddd..hsd....", "....dd..hsdd....", "......dhsdd.....", "....shsdd.......",
+            "...dssdd........", "....ddd.........", "................", "................"));
     }
 
     private void tool(String id, List<String> pixels) throws IOException {
@@ -740,6 +694,8 @@ public final class TrainAssets {
         recipe("tie_bundle", 2, List.of("P ", " P"), Map.of("P", "#minecraft:planks"));
         stonecutting("tie_bundle", 1, "#minecraft:planks");
         trackRecipes();
+        write("data/trainmod/recipe/recycle_track.json", Map.of("type", "trainmod:recycle_track"));
+        unlockRecipe("recycle_track", "trainmod:track_scrap");
         recipe("buffer_stop", 1, List.of("IRI", "P P", "PPP"),
             Map.of("I", "iron_ingot", "R", "red_dye", "P", "spruce_planks"));
         recipe("coupler", 1, List.of(" II", " CI", "S  "), Map.of("I", "iron_ingot", "C", "iron_chain", "S", "stick"));
@@ -765,39 +721,14 @@ public final class TrainAssets {
     }
 
     private void trackRecipes() throws IOException {
-        String rail = "trainmod:rail", ties = "trainmod:tie_bundle";
-        String straight = "trainmod:straight_rail", straight3 = "trainmod:straight_3_rail", straight6 = "trainmod:straight_6_rail";
-        String straight8 = "trainmod:straight_8_rail", straight12 = "trainmod:straight_12_rail";
-        String small = "trainmod:curve_small_rail", medium = "trainmod:curve_medium_rail", large = "trainmod:curve_large_rail";
-        String stone = "minecraft:stone", torch = "minecraft:redstone_torch";
-
-        recipe("straight_rail", 1, List.of("R R", " T ", " B "), Map.of("R", rail, "T", ties, "B", "trainmod:ballast"));
-        recipe("bridge_straight_rail", 1, List.of("R R", " T "), Map.of("R", rail, "T", ties));
-        shapeless("straight_3_rail", 1, straight, straight, straight);
-        shapeless("straight_6_rail", 1, straight3, straight3);
-        shapeless("straight_8_rail", 1, straight6, straight, straight);
-        shapeless("straight_12_rail", 1, straight6, straight6);
-
-        shapeless("curve_small_rail", 1, straight3, straight, straight, ties);
-        shapeless("curve_medium_rail", 1, straight8, straight, ties);
-        shapeless("curve_large_rail", 1, straight12, straight, ties);
-        shapeless("curve_medium_grade_rail", 1, medium, stone);
-        shapeless("curve_large_grade_rail", 1, large, stone);
-        shapeless("grade_6_rail", 1, straight6, stone, stone);
-        shapeless("grade_8_rail", 1, straight8, stone, stone);
-
-        var crossing = Map.of("S", straight3, "T", ties);
-        recipe("crossover_90_rail", 1, List.of(" S ", " T ", " S "), crossing);
-        recipe("crossover_45_rail", 1, List.of("  S", " T ", "S  "), crossing);
-        shapeless("turnout_45_rail", 1, straight3, straight, small, torch);
-        shapeless("turnout_45_medium_rail", 1, straight8, medium, torch);
-        shapeless("turnout_45_large_rail", 1, straight12, large, torch);
-        shapeless("turnout_parallel_rail", 1, straight8, medium, torch);
-        shapeless("turnout_parallel_long_rail", 1, straight12, straight3, large, torch);
-        shapeless("wye_rail", 1, small, small, torch);
-        shapeless("wye_medium_rail", 1, medium, medium, torch);
-        shapeless("scissors_rail", 1, straight12, straight12, medium, medium, torch, torch, torch, torch);
-        shapeless("scissors_long_rail", 1, "trainmod:scissors_rail", straight8, large, large);
+        for (var kind : TrackGeometry.Kind.values()) {
+            if (!kind.hasKit()) continue;
+            String id = kind.id() + "_rail";
+            var pattern = TrackMaterials.pattern(kind);
+            if (pattern.isEmpty()) shapeless(id, 1, TrackMaterials.ingredients(kind).toArray(String[]::new));
+            else recipe(id, kind == TrackGeometry.Kind.STRAIGHT ? TrackMaterials.STRAIGHT_YIELD : 1, pattern,
+                TrackMaterials.symbols(kind));
+        }
     }
 
     private void shapeless(String id, int count, String... ingredients) throws IOException {
@@ -890,7 +821,7 @@ public final class TrainAssets {
                     ? (y % 4) * 4 - 6 + Math.floorMod(x / 3 * 23 ^ (y % 4) * 59, 7) - 3
                     : path.equals("block/signal_cabin_panel") ? (x % 4 == 0 ? 16 : x % 4 == 3 ? -17 : 0)
                         + Math.floorMod(x * 13 ^ y * 11, 5) - 2
-                    : Math.floorMod(x * 23 ^ y * 59 ^ (x / 3 + y / 3) * 17, 11) - 5;
+                    : paintNoise(x, y);
                 int r = Math.clamp((color >> 16) + difference, 0, 255);
                 int g = Math.clamp(((color >> 8) & 255) + difference, 0, 255);
                 int b = Math.clamp((color & 255) + difference, 0, 255);

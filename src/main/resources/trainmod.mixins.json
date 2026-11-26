@@ -2,6 +2,6 @@
   "required": true,
   "package": "org.ja4.trainmod.mixin",
   "compatibilityLevel": "JAVA_25",
-  "client": ["BallastRenderUpdates", "VehiclePicking", "VehicleHitboxDebug"],
+  "client": ["BallastRenderUpdates", "ModelDependencyDiscovery", "VehiclePicking", "VehicleHitboxDebug"],
   "injectors": { "defaultRequire": 1 }
 }

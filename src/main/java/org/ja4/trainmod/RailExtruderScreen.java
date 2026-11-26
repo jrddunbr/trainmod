@@ -9,6 +9,7 @@ import net.minecraft.world.entity.player.Inventory;
 
 final class RailExtruderScreen extends AbstractContainerScreen<RailExtruderMenu> {
     private static final Identifier PROGRESS = Identifier.withDefaultNamespace("container/furnace/burn_progress");
+    static final int PROGRESS_X = 76, PROGRESS_Y = 34, PROGRESS_WIDTH = 24, PROGRESS_HEIGHT = 16;
 
     RailExtruderScreen(RailExtruderMenu menu, Inventory inventory, Component title) {
         super(menu, inventory, title, 176, 168);
@@ -30,10 +31,11 @@ final class RailExtruderScreen extends AbstractContainerScreen<RailExtruderMenu>
             graphics.fill(sx + 1, sy + 17, sx + 18, sy + 18, 0xffffffff);
             graphics.fill(sx + 17, sy + 1, sx + 18, sy + 18, 0xffffffff);
         }
-        int progress = menu.progress() * 24 / RailExtruder.CYCLE_TICKS;
-        graphics.blitSprite(RenderPipelines.GUI_TEXTURED, PROGRESS, x + 76, y + 34, 24, 16, 0.35f);
+        int progress = menu.progress() * PROGRESS_WIDTH / RailExtruder.CYCLE_TICKS;
+        graphics.blitSprite(RenderPipelines.GUI_TEXTURED, PROGRESS, x + PROGRESS_X, y + PROGRESS_Y, PROGRESS_WIDTH, PROGRESS_HEIGHT, 0.35f);
         if (progress > 0) {
-            graphics.blitSprite(RenderPipelines.GUI_TEXTURED, PROGRESS, 24, 16, 0, 0, x + 76, y + 34, progress, 16);
+            graphics.blitSprite(RenderPipelines.GUI_TEXTURED, PROGRESS, PROGRESS_WIDTH, PROGRESS_HEIGHT, 0, 0,
+                x + PROGRESS_X, y + PROGRESS_Y, progress, PROGRESS_HEIGHT);
         }
     }
 

@@ -71,6 +71,46 @@ public final class TrackGeometryTest {
     }
 
     @Test
+    void theFacesBesideDamageUseBothSidesOfTheSameMeshCut() {
+        for (var kind : List.of(TrackGeometry.Kind.STRAIGHT_3, TrackGeometry.Kind.GRADE_8,
+            TrackGeometry.Kind.CURVE_LARGE, TrackGeometry.Kind.TURNOUT_45, TrackGeometry.Kind.CROSSOVER_90)) {
+            for (int rotation : kind.rotations()) {
+                var shape = kind.shape(rotation, true);
+                for (int index = 0; index < shape.cells().size(); index++) {
+                    var cell = shape.cells().get(index);
+                    for (var section : TrackEnds.sections(shape, cell)) {
+                        if (section.next() < 0) continue;
+                        int previous = index;
+                        var next = shape.cells().get(section.next());
+                        expect(TrackEnds.sections(shape, next).stream().anyMatch(adjacent ->
+                            adjacent.route() == section.route() && adjacent.previous() == previous
+                                && Math.abs(section.end() - adjacent.start()) < 1e-7),
+                            kind + " caps adjoining segments at the same rail profile");
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void damagedRailBendsBothWaysAndMeetsTheIntactTrackAtTheJoint() {
+        var shape = TrackGeometry.Kind.STRAIGHT_3.shape(0, true);
+        var cell = BlockPos.ZERO.south();
+        for (double z : new double[]{0.5, 1.5}) {
+            Vec3 edge = new Vec3(0.245, TrackGeometry.RAIL_HEIGHT, z);
+            expect(TrackDamage.shift(shape, cell, edge).equals(edge), "The rails meet at the original joint");
+        }
+        Vec3 left = new Vec3(-0.245, TrackGeometry.RAIL_HEIGHT, 0.8);
+        Vec3 right = new Vec3(0.245, TrackGeometry.RAIL_HEIGHT, 0.8);
+        var bentLeft = TrackDamage.shift(shape, cell, left);
+        var bentRight = TrackDamage.shift(shape, cell, right);
+        expect(bentLeft.x - left.x > 0.15 && Math.abs(bentRight.x - bentLeft.x - 0.49) < 1e-9,
+            "Both rails shift together through the first lobe");
+        Vec3 otherLobe = new Vec3(-0.245, TrackGeometry.RAIL_HEIGHT, 1.2);
+        expect(TrackDamage.shift(shape, cell, otherLobe).x - otherLobe.x < -0.15, "The rails bend the other way before returning");
+    }
+
+    @Test
     void theBankLiftsTheOutsideRailAndEasesOverAnEnd() {
         var kind = TrackGeometry.Kind.CURVE_LARGE;
         for (boolean left : new boolean[]{true, false}) {

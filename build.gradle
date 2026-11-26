@@ -3,7 +3,13 @@ plugins {
     id 'net.neoforged.moddev' version '2.0.148'
 }
 
-repositories { mavenCentral() }
+repositories {
+    mavenCentral()
+    maven {
+        url = 'https://maven.blamejared.com'
+        content { includeGroup 'mezz.jei' }
+    }
+}
 
 def git = { String... arguments ->
     providers.exec {
@@ -93,24 +99,31 @@ neoForge {
     }
 }
 
+configurations {
+    jeiApi
+    compileOnly.extendsFrom(jeiApi)
+}
+
 dependencies {
+    jeiApi('mezz.jei:jei-26.3-common-api:31.17.0.113') { transitive = false }
     testImplementation 'org.junit.jupiter:junit-jupiter:5.13.4'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.13.4'
 }
 tasks.named('test') { useJUnitPlatform() }
 
 sourceSets {
+    def minecraftClasspath = main.compileClasspath - configurations.jeiApi
     test {
         compileClasspath += main.compileClasspath
-        runtimeClasspath += main.compileClasspath
+        runtimeClasspath += minecraftClasspath
     }
     gameTest {
         compileClasspath += main.output.classesDirs + main.compileClasspath
-        runtimeClasspath += main.output.classesDirs + main.compileClasspath
+        runtimeClasspath += main.output.classesDirs + minecraftClasspath
     }
     assetGen {
         compileClasspath += main.output.classesDirs + main.compileClasspath
-        runtimeClasspath += main.output.classesDirs + main.compileClasspath
+        runtimeClasspath += main.output.classesDirs + minecraftClasspath
     }
 }
 

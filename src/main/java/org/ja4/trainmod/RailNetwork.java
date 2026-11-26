@@ -1,7 +1,10 @@
 package org.ja4.trainmod;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.function.Predicate;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.vehicle.minecart.AbstractMinecart;
@@ -12,14 +15,15 @@ import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.RailShape;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import org.jspecify.annotations.Nullable;
 
 final class RailNetwork {
     private static final double EPSILON = 0.0001;
 
     record Rail(BlockPos root, TrackGeometry.Path path, List<BlockPos> cells, int route, boolean vanilla,
-                boolean startOpen, boolean endOpen) {
+                boolean startOpen, boolean endOpen, Set<BlockPos> broken) {
         Rail(BlockPos root, TrackGeometry.Path path, List<BlockPos> cells, int route, boolean vanilla) {
-            this(root, path, cells, route, vanilla, true, true);
+            this(root, path, cells, route, vanilla, true, true, Set.of());
         }
 
         Vec3 origin() { return TrackGeometry.origin(root); }
@@ -30,6 +34,36 @@ final class RailNetwork {
         Vec3 end(boolean end) { return origin().add(path.endpoint(end)); }
         double project(Vec3 position) { return path.project(position.subtract(origin())); }
         boolean open(boolean end) { return end ? endOpen : startOpen; }
+
+        BlockPos trackCell(Vec3 point) {
+            BlockPos column = BlockPos.containing(point);
+            return trackCell(column.getX(), column.getZ());
+        }
+
+        private BlockPos trackCell(int x, int z) {
+            // A grade's running rail can rise into the air block above its segment.
+            for (BlockPos cell : cells) {
+                if (cell.getX() == x && cell.getZ() == z) return cell;
+            }
+            return null;
+        }
+
+        boolean blocks(double from, double to) {
+            return !broken.isEmpty() && crosses(from, to, broken::contains);
+        }
+
+        boolean crosses(double from, double to, Predicate<BlockPos> visit) {
+            double low = Math.min(from, to), high = Math.max(from, to);
+            if (high - low <= 1e-8) return false;
+            var columns = path.columns();
+            for (var span : from < to ? columns : columns.reversed()) {
+                if (Math.min(high, span.end()) - Math.max(low, span.start()) <= 1e-8) continue;
+                BlockPos column = span.column();
+                BlockPos cell = trackCell(root.getX() + column.getX(), root.getZ() + column.getZ());
+                if (cell != null && visit.test(cell)) return true;
+            }
+            return false;
+        }
 
         boolean levelStraight() {
             Vec3 span = path.endpoint(true).subtract(path.endpoint(false));
@@ -43,12 +77,7 @@ final class RailNetwork {
 
         BlockPos trackCell() {
             double inside = Math.clamp(distance, EPSILON, rail.path.length - EPSILON);
-            BlockPos column = BlockPos.containing(rail.point(inside));
-            // The running rail can rise into the air block above its track segment.
-            for (BlockPos cell : rail.cells) {
-                if (cell.getX() == column.getX() && cell.getZ() == column.getZ()) return cell;
-            }
-            return null;
+            return rail.trackCell(rail.point(inside));
         }
     }
 
@@ -74,14 +103,21 @@ final class RailNetwork {
             BlockState rootState = level.getBlockState(root);
             if (!matches(state, rootState, 0)) return List.of();
             List<BlockPos> cells = shape.cells().stream().map(root::offset).toList();
+            Set<BlockPos> damaged = Set.of();
             for (int i = 0; i < cells.size(); i++) {
                 BlockPos cell = cells.get(i);
-                if (!level.isLoaded(cell) || !matches(state, level.getBlockState(cell), i)
+                if (!level.isLoaded(cell)) return List.of();
+                BlockState segment = level.getBlockState(cell);
+                if (!matches(state, segment, i)
                     || !TrackBlock.supported(level, cell, track.kind.grade() && cell.getY() > root.getY())) {
                     return List.of();
                 }
+                if (TrackBlock.broken(segment)) {
+                    if (damaged.isEmpty()) damaged = new HashSet<>();
+                    damaged.add(cell);
+                }
             }
-            if (!physical && track.kind.scissors()) return scissors(level, root, SwitchLayout.of(track.kind, shape), cells);
+            if (!physical && track.kind.scissors()) return scissors(level, root, SwitchLayout.of(track.kind, shape), cells, damaged);
             int[] routes = physical ? java.util.stream.IntStream.range(0, shape.routes().size()).toArray()
                 : track.kind.activeRoutes(track.kind.turnout() && rootState.getValue(BlockStateProperties.POWERED),
                     rootState.getValue(TrackBlock.HAND) == net.minecraft.world.level.block.state.properties.ChestType.LEFT);
@@ -92,11 +128,11 @@ final class RailNetwork {
                 var panel = SwitchLayout.of(track.kind, shape).panels().getFirst();
                 var blade = inactive == 0 ? panel.first() : panel.second();
                 double stop = Math.min(closedPath.length - 0.05, blade.distance(1) + SwitchLayout.POINT_CLEARANCE);
-                return List.of(new Rail(root, shape.routes().get(active), cells, active, false),
-                    new Rail(root, closedPath.section(stop, closedPath.length), cells, inactive, false, false, true));
+                return List.of(new Rail(root, shape.routes().get(active), cells, active, false, true, true, damaged),
+                    new Rail(root, closedPath.section(stop, closedPath.length), cells, inactive, false, false, true, damaged));
             }
             List<Rail> rails = new ArrayList<>(routes.length);
-            for (int route : routes) rails.add(new Rail(root, shape.routes().get(route), cells, route, false));
+            for (int route : routes) rails.add(new Rail(root, shape.routes().get(route), cells, route, false, true, true, damaged));
             return rails;
         }
         if (state.getBlock() instanceof BaseRailBlock vanilla && BaseRailBlock.isRail(state)) {
@@ -105,7 +141,7 @@ final class RailNetwork {
         return List.of();
     }
 
-    private static List<Rail> scissors(Level level, BlockPos root, SwitchLayout layout, List<BlockPos> cells) {
+    private static List<Rail> scissors(Level level, BlockPos root, SwitchLayout layout, List<BlockPos> cells, Set<BlockPos> damaged) {
         List<Rail> rails = new ArrayList<>();
         int index = 0;
         for (var route : layout.scissorRoutes()) {
@@ -113,7 +149,7 @@ final class RailNetwork {
             boolean exit = level.getBlockState(root.offset(route.exit().control())).getValue(BlockStateProperties.POWERED);
             boolean startOpen = entrance == route.diverging();
             boolean endOpen = exit == route.diverging();
-            rails.add(new Rail(root, route.path(startOpen, endOpen), cells, index++, false, startOpen, endOpen));
+            rails.add(new Rail(root, route.path(startOpen, endOpen), cells, index++, false, startOpen, endOpen, damaged));
         }
         return rails;
     }
@@ -205,18 +241,33 @@ final class RailNetwork {
     }
 
     static Position advance(Level level, Position position, double delta) {
-        return advance(level, position, delta, false);
+        return advance(level, position, delta, false, null);
     }
 
     static Position advanceBore(Level level, Position position, double delta) {
-        return advance(level, position, delta, true);
+        return advance(level, position, delta, true, null);
     }
 
-    private static Position advance(Level level, Position position, double delta, boolean extendFront) {
+    static boolean crossesNewCell(Level level, Position position, double delta, Predicate<BlockPos> visit) {
+        double back = Math.copySign(1e-8, position.forward * delta);
+        var visited = new HashSet<BlockPos>();
+        visited.add(new Position(position.rail, position.distance - back, position.forward).trackCell());
+        boolean[] hit = {false};
+        advance(level, position, delta, false, cell -> {
+            hit[0] = visited.add(cell) && visit.test(cell);
+            return hit[0];
+        });
+        return hit[0];
+    }
+
+    private static Position advance(Level level, Position position, double delta, boolean extendFront,
+                                    @Nullable Predicate<BlockPos> visit) {
         double distance = position.distance + position.forward * delta;
         for (int transitions = 0; transitions < 64; transitions++) {
             Rail rail = position.rail;
             double length = rail.path.length;
+            double from = Math.clamp(position.distance, 0, length), to = Math.clamp(distance, 0, length);
+            if (rail.blocks(from, to) || visit != null && rail.crosses(from, to, visit)) return null;
             if (distance >= -1e-8 && distance <= length + 1e-8) {
                 return new Position(rail, Math.clamp(distance, 0, length), position.forward);
             }

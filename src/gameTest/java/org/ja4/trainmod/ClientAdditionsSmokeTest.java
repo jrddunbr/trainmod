@@ -43,6 +43,7 @@ final class ClientAdditionsSmokeTest {
     private static int heldSneak;
     private static boolean initialized;
     private static boolean done;
+    static boolean jeiVerified;
     private static volatile int steamId;
     private static volatile int tenderId;
     private static volatile int steamEnd = 1;
@@ -59,10 +60,15 @@ final class ClientAdditionsSmokeTest {
 
     @SubscribeEvent
     static void tick(ClientTickEvent.Pre event) {
-        if (MODE == null || done) return;
+        if (MODE == null || MODE.equals("jeiExtruder") || done) return;
         Minecraft client = Minecraft.getInstance();
         if (client.player == null || client.getSingleplayerServer() == null) return;
         if (!initialized && client.gui.screen() != null) return;
+        if (MODE.equals("brokenRails") || MODE.equals("jeiAndBentTrack")) {
+            if (MODE.equals("jeiAndBentTrack") && !jeiVerified) return;
+            checkBrokenRails(client);
+            return;
+        }
         var server = client.getSingleplayerServer();
         UUID playerId = client.player.getUUID();
         if (!initialized) {
@@ -185,6 +191,130 @@ final class ClientAdditionsSmokeTest {
             client.getSoundManager().removeListener(LISTENER);
             client.stop();
         }
+    }
+
+    private static void checkBrokenRails(Minecraft client) {
+        if (!initialized) {
+            initialized = true;
+            var playerId = client.player.getUUID();
+            var server = client.getSingleplayerServer();
+            server.execute(() -> {
+                var player = server.getPlayerList().getPlayer(playerId);
+                var level = player.level();
+                var root = player.blockPosition().east(5).above(10);
+                RailwayGameTests.straight(level, root.north(), 0);
+                RailwayGameTests.piece(level, root, TrackGeometry.Kind.STRAIGHT_3, 0, true);
+                RailwayGameTests.straight(level, root.south(3), 0);
+                BlockPos damaged = root.south();
+                level.setBlockAndUpdate(damaged,
+                    level.getBlockState(damaged).setValue(TrackBlock.CONDITION, TrackBlock.Condition.BROKEN));
+                yard = root;
+            });
+            return;
+        }
+        if (yard == null || !TrackBlock.broken(client.level.getBlockState(yard.south()))
+            || !(client.level.getBlockState(yard.south(3)).getBlock() instanceof TrackBlock)) return;
+        var left = railDetails(client, yard, RailEndModel.class);
+        var right = railDetails(client, yard.south(2), RailEndModel.class);
+        var bent = railDetails(client, yard.south(), BentTrackModel.class);
+        var rail = bent.stream().filter(quad -> quad.materialInfo().sprite().contents().name().getPath().contains("steel")).toList();
+        var ties = bent.stream().filter(quad -> quad.materialInfo().sprite().contents().name().getPath().equals("block/creosote")).toList();
+        var railVertices = rail.stream().flatMap(quad -> java.util.stream.IntStream.range(0, 4).mapToObj(quad::position)).toList();
+        var tieVertices = ties.stream().flatMap(quad -> java.util.stream.IntStream.range(0, 4).mapToObj(quad::position)).toList();
+        boolean passed = left.isEmpty() && right.isEmpty() && rail.size() > 50
+            && railVertices.stream().anyMatch(vertex -> vertex.z() < 0.001 && vertex.x() > 0.20 && vertex.x() < 0.30)
+            && railVertices.stream().anyMatch(vertex -> vertex.z() > 0.999 && vertex.x() > 0.70 && vertex.x() < 0.80)
+            && railVertices.stream().anyMatch(vertex -> vertex.x() < 0.10)
+            && railVertices.stream().anyMatch(vertex -> vertex.x() > 0.90)
+            && tieVertices.stream().anyMatch(vertex -> vertex.x() < 0.02 || vertex.x() > 0.98);
+        LogUtils.getLogger().info("TRAINMOD BROKEN RAILS CLIENT {} intact joint faces {}, {}, bent rail faces {}, tie faces {}",
+            passed ? "PASSED" : "FAILED", left.size(), right.size(), rail.size(), ties.size());
+        LogUtils.getLogger().info("TRAINMOD ROTATED TRACK MODELS CLIENT {}", rotatedTrackModelsMatch(client) ? "PASSED" : "FAILED");
+        LogUtils.getLogger().info("TRAINMOD PROCEDURAL TRACK CACHE CLIENT {}", trackCacheWorks(client) ? "PASSED" : "FAILED");
+        done = true;
+        client.stop();
+    }
+
+    private static boolean trackCacheWorks(Minecraft client) {
+        var kind = TrackGeometry.Kind.TURNOUT_PARALLEL_LONG;
+        var track = Trainmod.TRACK.get(kind).get();
+        var state = track.segment(2, false, 0).setValue(TrackBlock.CONDITION, TrackBlock.Condition.UNBALLASTED);
+        var ballasted = state.setValue(TrackBlock.CONDITION, TrackBlock.Condition.BALLASTED);
+        var manager = client.getModelManager();
+        var model = manager.getBlockStateModelSet().get(state);
+        var level = net.minecraft.client.renderer.block.BlockAndTintGetter.EMPTY;
+        var random = net.minecraft.util.RandomSource.create(0);
+        var first = new java.util.ArrayList<net.minecraft.client.renderer.block.dispatch.BlockStateModelPart>();
+        var repeat = new java.util.ArrayList<net.minecraft.client.renderer.block.dispatch.BlockStateModelPart>();
+        var withBed = new java.util.ArrayList<net.minecraft.client.renderer.block.dispatch.BlockStateModelPart>();
+        model.collectParts(level, BlockPos.ZERO, state, random, first);
+        model.collectParts(level, BlockPos.ZERO, state, random, repeat);
+        manager.getBlockStateModelSet().get(ballasted).collectParts(level, BlockPos.ZERO, ballasted, random, withBed);
+        return first.size() >= 2 && first.get(0) == repeat.get(0) && first.get(1) == repeat.get(1)
+            && withBed.stream().flatMap(part -> part.getQuads(null).stream())
+                .anyMatch(quad -> quad.materialInfo().sprite().contents().name().getPath().equals("block/gravel"))
+            && manager.requiresRender(state, ballasted);
+    }
+
+    private static boolean rotatedTrackModelsMatch(Minecraft client) {
+        var kinds = java.util.List.of(TrackGeometry.Kind.STRAIGHT_3, TrackGeometry.Kind.CURVE_LARGE,
+            TrackGeometry.Kind.CURVE_MEDIUM_GRADE, TrackGeometry.Kind.TURNOUT_PARALLEL, TrackGeometry.Kind.SCISSORS_LONG);
+        for (var kind : kinds) {
+            for (int rotation : kind.diagonalOrientation() ? new int[]{0, 2} : new int[]{0}) {
+                for (boolean left : new boolean[]{true, false}) {
+                    double[] original = trackMeshBounds(client, kind, rotation, left, 1);
+                    double[] rotated = trackMeshBounds(client, kind, rotation + 4, left, 0);
+                    for (int axis = 0; axis < original.length; axis++) {
+                        if (!Double.isFinite(original[axis]) || !Double.isFinite(rotated[axis])
+                            || Math.abs(original[axis] - rotated[axis]) > 0.001) {
+                            LogUtils.getLogger().error("Rail mesh bounds differ for {} at rotation {} facing {}: {} vs {}", kind,
+                                rotation, left, java.util.Arrays.toString(original), java.util.Arrays.toString(rotated));
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    private static double[] trackMeshBounds(Minecraft client, TrackGeometry.Kind kind, int rotation, boolean left, int quarter) {
+        var track = Trainmod.TRACK.get(kind).get();
+        double[] bounds = {Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY,
+            Double.NEGATIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NEGATIVE_INFINITY};
+        var cells = kind.shape(rotation, left).cells();
+        var models = client.getModelManager().getBlockStateModelSet();
+        for (int i = 0; i < cells.size(); i++) {
+            var state = track.segment(rotation, left, i);
+            var cell = cells.get(i);
+            var parts = new java.util.ArrayList<net.minecraft.client.renderer.block.dispatch.BlockStateModelPart>();
+            models.get(state).collectParts(net.minecraft.client.renderer.block.BlockAndTintGetter.EMPTY, cell, state,
+                net.minecraft.util.RandomSource.create(0), parts);
+            for (var part : parts) {
+                for (var quad : part.getQuads(null)) {
+                    if (!quad.materialInfo().sprite().contents().name().getPath().contains("steel")) continue;
+                    for (int vertex = 0; vertex < 4; vertex++) {
+                        var v = quad.position(vertex);
+                        var point = TrackGeometry.transform(new Vec3(cell.getX() + v.x() - 0.5, cell.getY() + v.y(),
+                            cell.getZ() + v.z() - 0.5), quarter, false);
+                        bounds[0] = Math.min(bounds[0], point.x); bounds[3] = Math.max(bounds[3], point.x);
+                        bounds[1] = Math.min(bounds[1], point.y); bounds[4] = Math.max(bounds[4], point.y);
+                        bounds[2] = Math.min(bounds[2], point.z); bounds[5] = Math.max(bounds[5], point.z);
+                    }
+                }
+            }
+        }
+        return bounds;
+    }
+
+    private static java.util.List<net.minecraft.client.resources.model.geometry.BakedQuad> railDetails(
+            Minecraft client, BlockPos pos, Class<?> model) {
+        var parts = new java.util.ArrayList<net.minecraft.client.renderer.block.dispatch.BlockStateModelPart>();
+        var state = client.level.getBlockState(pos);
+        client.getModelManager().getBlockStateModelSet().get(state).collectParts(client.level, pos, state,
+            net.minecraft.util.RandomSource.create(0), parts);
+        return parts.stream().filter(part -> part.getClass().getEnclosingClass() == model)
+            .flatMap(part -> part.getQuads(null).stream()).toList();
     }
 
     private static void checkTender(Minecraft client, TrainVehicle steam, TrainVehicle tender) {

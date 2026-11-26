@@ -35,7 +35,8 @@ final class VehicleItem extends Item {
         }
         Vec3 forward = context.getPlayer().getViewVector(1).multiply(1, 0, 1);
         RailNetwork.Position position = RailNetwork.locate(level, cell, TrackGeometry.origin(cell), forward);
-        if (position == null || position.point().distanceToSqr(TrackGeometry.origin(cell)) > 0.8) {
+        if (TrackBlock.broken(level.getBlockState(cell)) || position == null
+            || position.point().distanceToSqr(TrackGeometry.origin(cell)) > 0.8) {
             context.getPlayer().sendOverlayMessage(Component.translatable("message.trainmod.place_vehicle"));
             return InteractionResult.FAIL;
         }

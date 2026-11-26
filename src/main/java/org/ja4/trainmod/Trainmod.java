@@ -59,6 +59,7 @@ public final class Trainmod {
         MENUS.register("ballast_regulator", () -> new MenuType<>(BallastRegulatorMenu::new, FeatureFlags.DEFAULT_FLAGS));
     static final DeferredItem<Item> RAIL = ITEMS.registerSimpleItem("rail");
     static final DeferredItem<Item> TIE_BUNDLE = ITEMS.registerSimpleItem("tie_bundle");
+    static final DeferredItem<Item> TRACK_SCRAP = ITEMS.registerSimpleItem("track_scrap");
     static final DeferredBlock<RailwayBlocks.Stand> STAND =
         BLOCKS.registerBlock("switch_stand", RailwayBlocks.Stand::new, p -> p.strength(1.5f).noOcclusion().noCollision());
     static final DeferredHolder<net.minecraft.world.level.block.entity.BlockEntityType<?>,
@@ -184,6 +185,7 @@ public final class Trainmod {
         MENUS.register(bus);
         var recipes = DeferredRegister.create(Registries.RECIPE_SERIALIZER, ID);
         recipes.register("diesel", () -> DieselRecipe.SERIALIZER);
+        recipes.register("recycle_track", () -> TrackRecyclingRecipe.SERIALIZER);
         recipes.register(bus);
         TABS.register(bus);
     }

@@ -1,7 +1,9 @@
 package org.ja4.trainmod;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import net.minecraft.core.Direction;
 
 /** Cuboids in sixteenths of a block, with the deck centered over the rail. */
@@ -14,12 +16,49 @@ final class VehicleModels {
     static final float COUPLER_TOP = COUPLER_BOTTOM + COUPLER_HEIGHT;
     static final float COUPLER_INNER_END = 18;
     static final float OPEN_DOOR_SHIFT = 11.9f;
-    static final float DECK_HEIGHT = 7.02f / 16;
-    record Box(int color, float x, float y, float z, float width, float height, float length) {}
-    record Face(Box bounds, Direction direction) {}
+    private static final float DECK_TOP = 7;
+    static final float DECK_HEIGHT = (DECK_TOP + 0.02f) / 16;
+    static final float GONDOLA_FLOOR_HALF_WIDTH = 13.75f;
+    static final float GONDOLA_FLOOR_HALF_LENGTH = 17;
+    enum Panel {
+        FLAT_SILL, GONDOLA_WALL, BOXCAR_WALL, BOXCAR_DOOR, DECK, DIESEL_VENTS, TENDER_COAL, TENDER_SIDE;
+
+        boolean onTop() { return this == DECK || this == TENDER_COAL; }
+    }
+
+    record Box(int color, float x, float y, float z, float width, float height, float length, Panel panel) {
+        Box(int color, float x, float y, float z, float width, float height, float length) {
+            this(color, x, y, z, width, height, length, null);
+        }
+    }
+
+    record Face(Box bounds, Direction direction, Box source) {
+        Panel panel() {
+            return source == null ? null : source.panel;
+        }
+
+        float panelU(float x, float z) {
+            if (direction == Direction.UP) return x - source.x;
+            return direction == Direction.EAST ? source.z + source.length - z : z - source.z;
+        }
+
+        float panelV(float y, float z) {
+            return direction == Direction.UP ? z - source.z : source.y + source.height - y;
+        }
+    }
     record Wheel(float y, float z, float radius, List<Box> boxes) {}
 
     private record Rectangle(float u0, float v0, float u1, float v1) {
+        Rectangle join(Rectangle other) {
+            if (close(v0, other.v0) && close(v1, other.v1) && (close(u1, other.u0) || close(other.u1, u0))) {
+                return new Rectangle(Math.min(u0, other.u0), v0, Math.max(u1, other.u1), v1);
+            }
+            if (close(u0, other.u0) && close(u1, other.u1) && (close(v1, other.v0) || close(other.v1, v0))) {
+                return new Rectangle(u0, Math.min(v0, other.v0), u1, Math.max(v1, other.v1));
+            }
+            return null;
+        }
+
         void subtract(Rectangle cover, List<Rectangle> visible) {
             float left = Math.max(u0, cover.u0), right = Math.min(u1, cover.u1);
             float bottom = Math.max(v0, cover.v0), top = Math.min(v1, cover.v1);
@@ -51,11 +90,28 @@ final class VehicleModels {
 
     private static final float EPSILON = 0.00001f;
 
+    private static boolean close(float first, float second) { return Math.abs(first - second) <= EPSILON; }
+
+    private record Surface(Direction direction, int color, float plane, Box textureSource) {
+        Face face(Rectangle region) {
+            int axis = direction.getAxis().ordinal();
+            int u = (axis + 1) % 3, v = (axis + 2) % 3;
+            float[] origin = new float[3], size = new float[3];
+            origin[axis] = plane;
+            origin[u] = region.u0;
+            origin[v] = region.v0;
+            size[u] = region.u1 - region.u0;
+            size[v] = region.v1 - region.v0;
+            return new Face(new Box(color, origin[0], origin[1], origin[2], size[0], size[1], size[2]), direction, textureSource);
+        }
+    }
+
     static List<Face> visibleFaces(List<Box> boxes) {
         List<Bounds> volumes = boxes.stream().map(Bounds::new).toList();
-        List<Face> faces = new ArrayList<>();
+        Map<Surface, List<Rectangle>> surfaces = new LinkedHashMap<>();
         for (int i = 0; i < boxes.size(); i++) {
             Bounds box = volumes.get(i);
+            Box source = boxes.get(i);
             for (Direction face : Direction.values()) {
                 int axis = face.getAxis().ordinal();
                 int u = (axis + 1) % 3, v = (axis + 2) % 3;
@@ -74,19 +130,36 @@ final class VehicleModels {
                     for (Rectangle fragment : visible) fragment.subtract(cover, uncovered);
                     visible = uncovered;
                 }
-                for (Rectangle fragment : visible) {
-                    float[] origin = new float[3], size = new float[3];
-                    origin[axis] = plane;
-                    origin[u] = fragment.u0;
-                    origin[v] = fragment.v0;
-                    size[u] = fragment.u1 - fragment.u0;
-                    size[v] = fragment.v1 - fragment.v0;
-                    faces.add(new Face(new Box(boxes.get(i).color, origin[0], origin[1], origin[2],
-                        size[0], size[1], size[2]), face));
+                if (!visible.isEmpty()) {
+                    var surface = new Surface(face, source.color, plane, textured(source, face) ? source : null);
+                    var regions = surfaces.computeIfAbsent(surface, ignored -> new ArrayList<>());
+                    for (Rectangle fragment : visible) joinSurface(regions, fragment);
                 }
             }
         }
+        List<Face> faces = new ArrayList<>();
+        surfaces.forEach((surface, regions) -> regions.forEach(region -> faces.add(surface.face(region))));
         return faces;
+    }
+
+    private static boolean textured(Box box, Direction face) {
+        if (box.panel == null) return false;
+        if (box.panel.onTop()) return face == Direction.UP;
+        return face == Direction.WEST && box.x < 0 || face == Direction.EAST && box.x + box.width > 0;
+    }
+
+    private static void joinSurface(List<Rectangle> regions, Rectangle region) {
+        for (int i = 0; i < regions.size();) {
+            var joined = region.join(regions.get(i));
+            if (joined == null) {
+                i++;
+            } else {
+                regions.remove(i);
+                region = joined;
+                i = 0;
+            }
+        }
+        regions.add(region);
     }
 
     private static final int STEEL = 0x292c32;
@@ -104,16 +177,31 @@ final class VehicleModels {
     private final List<Box> boxes = new ArrayList<>();
 
     static List<Box> forKind(TrainVehicle.Kind kind) {
+        var boxes = withBrakeMount(kind);
+        if (kind.powered) return boxes;
+        var posed = new ArrayList<>(boxes);
+        for (var part : brakeWheel(kind)) {
+            posed.add(offset(part, (float) (16 * kind.brakeWheelOffset()), kind.brakeWheelHeight(), 0));
+        }
+        return posed;
+    }
+
+    static List<Box> withBrakeMount(TrainVehicle.Kind kind) {
         VehicleModels model = body(kind);
-        if (!kind.powered) model.handbrake(kind.brakeWheelHeight());
+        if (!kind.powered) model.brakeMount(kind.brakeWheelHeight());
         return model.scaled(kind);
     }
 
     static List<Box> bodyBoxes(TrainVehicle.Kind kind) { return body(kind).scaled(kind); }
 
-    static List<Box> brakeCenter(TrainVehicle.Kind kind) {
+    static List<Box> brakeWheel(TrainVehicle.Kind kind) {
         var model = new VehicleModels();
-        model.box(GOLD, -0.38f, -0.8f, BRAKE_WHEEL_Z, 0.76f, 1.6f, 0.6f);
+        model.box(GOLD, -2.7f, -1.5f, BRAKE_WHEEL_Z, 0.7f, 3, 0.6f);
+        model.box(GOLD, 2, -1.5f, BRAKE_WHEEL_Z, 0.7f, 3, 0.6f);
+        model.box(GOLD, -2, 0.9f, BRAKE_WHEEL_Z, 4, 0.6f, 0.6f);
+        model.box(GOLD, -2, -1.5f, BRAKE_WHEEL_Z, 4, 0.6f, 0.6f);
+        model.box(GOLD, -0.28f, -0.9f, BRAKE_WHEEL_Z, 0.56f, 1.8f, 0.6f);
+        model.box(GOLD, -2, -0.22f, BRAKE_WHEEL_Z, 4, 0.44f, 0.6f);
         return model.scaled(kind);
     }
 
@@ -123,11 +211,11 @@ final class VehicleModels {
             kind != TrainVehicle.Kind.STEAM_LOCOMOTIVE && kind != TrainVehicle.Kind.TUNNEL_BORE);
         switch (kind) {
             case LOCOMOTIVE -> model.locomotive();
-            case FLATCAR -> model.flatcar();
-            case GONDOLA -> model.gondola(PRR, RIB, PRR_LIGHT);
+            case FLATCAR -> model.flatDeck(PRR);
+            case GONDOLA -> model.gondola(PRR);
             case BOXCAR -> model.boxcar();
             case TUNNEL_BORE -> model.bore();
-            case BALLAST_CAR -> model.gondola(0xd6ac38, 0xa27b26, 0xe5be4f);
+            case BALLAST_CAR -> model.gondola(0xd6ac38);
             case STEAM_LOCOMOTIVE -> model.steam();
             case TENDER -> model.tender();
             case ELECTRIC_SHUNTER -> model.shunter();
@@ -156,14 +244,13 @@ final class VehicleModels {
         float widthScale = kind.width / 2;
         float lengthScale = kind.length / 2.5f;
         return boxes.stream().map(box -> new Box(box.color, box.x * widthScale, box.y,
-            box.z * lengthScale, box.width * widthScale, box.height, box.length * lengthScale)).toList();
+            box.z * lengthScale, box.width * widthScale, box.height, box.length * lengthScale, box.panel)).toList();
     }
 
     static List<Box> doors(TrainVehicle.Kind kind, boolean left) {
         var model = new VehicleModels();
         float x = left ? 15.03f : -15.83f;
-        model.box(PRR, x, 6.95f, -5.95f, 0.8f, 9.45f, 11.9f);
-        for (int z = -5; z <= 5; z += 2) model.box(RIB, x - 0.065f, 7.15f, z, 0.93f, 9.05f, 0.32f);
+        model.panel(Panel.BOXCAR_DOOR, PRR, x - 0.065f, 6.95f, -5.95f, 0.93f, 9.45f, 11.9f);
         model.box(STEEL, x - 0.145f, 10.9f, -4.6f, 1.09f, 1.14f, 0.95f);
         return model.scaled(kind);
     }
@@ -222,7 +309,7 @@ final class VehicleModels {
     private void locomotive() {
         box(GOLD, -15, 7, -18, 30, 1.6f, 36);
         box(DARK_GREEN, -14, 8.6f, -17.5f, 28, 1, 35);
-        box(GREEN, -10, 9.6f, 4, 20, 8.4f, 13);
+        panel(Panel.DIESEL_VENTS, GREEN, -10.35f, 9.6f, 4, 20.7f, 8.4f, 13);
         box(DARK_GREEN, -9, 18, 4, 18, 0.7f, 12.5f);
         box(GREEN, -10, 9.6f, -17, 20, 7.1f, 12);
         box(DARK_GREEN, -9, 16.7f, -17, 18, 0.7f, 12);
@@ -234,9 +321,6 @@ final class VehicleModels {
             box(GREEN, x, 9.6f, -5.3f, 1.4f, 4, 9.3f);
             for (int end : new int[]{-17, 16}) {
                 box(GOLD, x, 9.6f, end, 1, 4.4f, 1);
-            }
-            for (int z = 5; z < 15; z += 2) {
-                box(DARK_GREEN, side < 0 ? -10.35f : 10, 12, z, 0.35f, 4.4f, 0.55f);
             }
         }
         box(STEEL, -3, 14.1f, 16.9f, 6, 3.2f, 0.7f);
@@ -254,6 +338,8 @@ final class VehicleModels {
         int boiler = 0x313439;
         int smokeBox = 0x41474a;
         box(0x552c2b, -15, 7, -16, 30, 1.25f, 33);
+        box(STEEL, -7.5f, 7.8f, -8.4f, 15, 1.5f, 3.3f);
+        box(STEEL, -8.5f, 7.8f, 10.8f, 17, 1.5f, 4.2f);
         box(boiler, -11.5f, 9, -10, 23, 8, 22.4f);
         box(boiler, -9, 17, -10, 18, 3, 22.4f);
         box(boiler, -6, 20, -10, 12, 0.6f, 22.4f);
@@ -310,29 +396,28 @@ final class VehicleModels {
     static List<Box> posedSteamGear(TrainVehicle.Kind kind) {
         var boxes = new ArrayList<Box>();
         for (var wheel : steamWheels(kind)) {
-            for (var box : wheel.boxes()) boxes.add(offset(box, wheel.y(), wheel.z()));
+            for (var box : wheel.boxes()) boxes.add(offset(box, 0, wheel.y(), wheel.z()));
         }
         var driver = steamWheels(kind).get(1);
-        for (var box : steamRods(kind)) boxes.add(offset(box, driver.y(), driver.z() + 1.15f));
+        for (var box : steamRods(kind)) boxes.add(offset(box, 0, driver.y(), driver.z() + 1.15f));
         return boxes;
     }
 
-    private static Box offset(Box box, float y, float z) {
-        return new Box(box.color(), box.x(), box.y() + y, box.z() + z, box.width(), box.height(), box.length());
+    private static Box offset(Box box, float x, float y, float z) {
+        return new Box(box.color(), box.x() + x, box.y() + y, box.z() + z, box.width(), box.height(), box.length(), box.panel());
     }
 
     private void tender() {
-        box(0x393738, -15.1f, 6.8f, -17.7f, 30.2f, 7.7f, 35.4f);
-        box(0x492e2d, -15.4f, 7, -16.9f, 30.8f, 3.25f, 33.8f);
+        panel(Panel.TENDER_SIDE, 0x4a3d3b, -15.4f, 6.8f, -17.7f, 30.8f, 7.7f, 35.4f);
         box(0x252428, -13, 14.5f, 2, 26, 1.7f, 14.4f);
-        for (int z = 3; z < 15; z += 3) box(0x333237, -11 + (z % 2), 16.2f, z, 22, 0.45f, 2.1f);
+        panel(Panel.TENDER_COAL, 0x555354, -11, 16.2f, 3, 23, 0.45f, 11.1f);
         box(STEEL, -5.6f, 14.5f, -8, 11.2f, 1.85f, 6);
         box(0x552c2b, -5.6f, 16.35f, -8, 11.2f, 0.45f, 6);
         box(WHEEL, 8, 14.5f, -14.4f, 4.5f, 0.85f, 4.5f);
     }
 
     private void shunter() {
-        box(GOLD, -15.5f, 7.7f, -17.7f, 31, 1.25f, 35.4f);
+        box(GOLD, -15.5f, 7.7f, -17.7f, 31, 1.3f, 35.4f);
         box(0x435f73, -12, 9, -17, 24, 6.4f, 10);
         box(0x435f73, -12, 9, 5, 24, 7.5f, 12);
         box(0x2c4450, -10, 16.4f, 7, 20, 1.1f, 9);
@@ -343,59 +428,40 @@ final class VehicleModels {
         box(WHEEL, -6, 20.3f, 9.4f, 12, 0.5f, 1.15f);
     }
 
-    private void flatcar() {
-        flatDeck(PRR, RIB);
+    private void flatDeck(int paint) {
+        panel(Panel.FLAT_SILL, paint, -15.25f, 4.4f, -18, 30.5f, 1.7f, 36);
+        panel(Panel.DECK, 0x815d42, -15.25f, 6.1f, -18, 30.5f, DECK_TOP - 6.1f, 36);
     }
 
-    private void flatDeck(int paint, int ribs) {
-        box(paint, -15, 4.6f, -18, 30, 1.5f, 36);
-        for (int z = -18; z < 18; z += 3) {
-            box(z % 2 == 0 ? FLOOR : 0x815d42, -14, 6.1f, z, 28, 0.9f, 2.9f);
-        }
-        for (int z : new int[]{-14, -4, 5, 14}) {
-            box(ribs, -15.25f, 4.4f, z, 0.6f, 1.7f, 2);
-            box(ribs, 14.65f, 4.4f, z, 0.6f, 1.7f, 2);
-        }
-    }
-
-    private void gondola(int paint, int ribs, int trim) {
-        flatDeck(paint, ribs);
-        box(paint, -15, 6.2f, -17, 1.25f, 6.3f, 34);
-        box(paint, 13.75f, 6.2f, -17, 1.25f, 6.3f, 34);
-        box(paint, -15, 6.2f, -18, 30, 6.3f, 1);
-        box(paint, -15, 6.2f, 17, 30, 6.3f, 1);
-        for (int x : new int[]{-15, 14}) {
-            box(trim, x, 12.5f, -18, 1, 0.5f, 36);
-            for (int z = -15; z <= 15; z += 5) {
-                box(ribs, x - 0.3f, 6.2f, z, 1.6f, 6.3f, 0.9f);
-            }
-        }
+    private void gondola(int paint) {
+        float bottom = 4.4f, height = 13 - bottom;
+        float halfWidth = GONDOLA_FLOOR_HALF_WIDTH, halfLength = GONDOLA_FLOOR_HALF_LENGTH;
+        float thickness = 15.3f - halfWidth;
+        panel(Panel.GONDOLA_WALL, paint, -15.3f, bottom, -18, thickness, height, 36);
+        panel(Panel.GONDOLA_WALL, paint, halfWidth, bottom, -18, thickness, height, 36);
+        box(paint, -halfWidth, bottom, -18, 2 * halfWidth, height, 1);
+        box(paint, -halfWidth, bottom, halfLength, 2 * halfWidth, height, 1);
+        panel(Panel.DECK, 0x815d42, -halfWidth, bottom, -halfLength, 2 * halfWidth, DECK_TOP - bottom, 2 * halfLength);
     }
 
     private void boxcar() {
-        box(FLOOR, -15, 4.6f, -18, 30, 1.5f, 36);
-        box(PRR, -15, 6.1f, -18, 30, 11.4f, 1);
-        box(PRR, -15, 6.1f, 17, 30, 11.4f, 1);
+        box(FLOOR, -15.45f, 4.6f, -18, 30.9f, 1.5f, 36);
+        box(PRR, -15.45f, 6.1f, -18, 30.9f, 11.4f, 1);
+        box(PRR, -15.45f, 6.1f, 17, 30.9f, 11.4f, 1);
         for (int x : new int[]{-15, 14}) {
-            box(PRR, x, 6.1f, -17, 1, 11.4f, 11);
-            box(PRR, x, 6.1f, 6, 1, 11.4f, 11);
-            box(RIB, x, 16, -6, 1, 1.5f, 12);
-            box(RIB, x, 6.1f, -6, 1, 0.8f, 12);
-            float side = x < 0 ? -15.45f : 14.65f;
-            for (int z : new int[]{-16, -11, 10, 15}) {
-                box(PRR_LIGHT, side, 6.7f, z, 0.8f, 10.4f, 0.75f);
-            }
+            float side = x < 0 ? -15.45f : 14;
+            panel(Panel.BOXCAR_WALL, PRR, side, 6.1f, -17, 1.45f, 11.4f, 11);
+            panel(Panel.BOXCAR_WALL, PRR, side, 6.1f, 6, 1.45f, 11.4f, 11);
+            box(RIB, side, 16, -6, 1.45f, 1.5f, 12);
+            box(RIB, side, 6.1f, -6, 1.45f, 0.85f, 12);
         }
         box(RIB, -15.5f, 17.5f, -18.5f, 31, 0.8f, 37);
         box(PRR_LIGHT, -10, 18.3f, -18, 20, 0.7f, 36);
     }
 
-    private void handbrake(float y) {
-        box(STEEL, BRAKE_X - 0.8f, 5.25f, -19, 1.6f, y - 5.25f, 1);
-        box(GOLD, BRAKE_X - 2.7f, y - 1.5f, BRAKE_WHEEL_Z, 0.7f, 3, 0.6f);
-        box(GOLD, BRAKE_X + 2, y - 1.5f, BRAKE_WHEEL_Z, 0.7f, 3, 0.6f);
-        box(GOLD, BRAKE_X - 2, y + 0.9f, BRAKE_WHEEL_Z, 4, 0.6f, 0.6f);
-        box(GOLD, BRAKE_X - 2, y - 1.5f, BRAKE_WHEEL_Z, 4, 0.6f, 0.6f);
+    private void brakeMount(float y) {
+        box(STEEL, BRAKE_X - 0.8f, 5.25f, -19, 1.6f, y + 0.45f - 5.25f, 1.4f);
+        box(STEEL, BRAKE_X - 0.42f, y - 0.38f, -19.3f, 0.84f, 0.76f, 0.55f);
     }
 
     private void bore() {
@@ -444,5 +510,9 @@ final class VehicleModels {
 
     private void box(int color, float x, float y, float z, float width, float height, float length) {
         boxes.add(new Box(color, x, y, z, width, height, length));
+    }
+
+    private void panel(Panel panel, int color, float x, float y, float z, float width, float height, float length) {
+        boxes.add(new Box(color, x, y, z, width, height, length, panel));
     }
 }
