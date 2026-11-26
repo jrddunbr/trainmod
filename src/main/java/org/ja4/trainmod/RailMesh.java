@@ -27,8 +27,7 @@ final class RailMesh {
 
     @FunctionalInterface
     interface QuadSink {
-        void add(BlockPos cell, Surface surface, Vec3 a, Vec3 b, Vec3 c, Vec3 d,
-                 double uStart, double vStart, double uEnd, double vEnd);
+        void add(BlockPos cell, Surface surface, SurfaceUv.Vertex a, SurfaceUv.Vertex b, SurfaceUv.Vertex c, SurfaceUv.Vertex d);
     }
 
     static void fixed(TrackGeometry.Kind kind, TrackGeometry.Shape shape, int banking, List<Tie> ties, QuadSink sink) {
@@ -318,12 +317,10 @@ final class RailMesh {
                     Vec3 d = roadbedPoint(path, from, bed[j], lift, cell, raised, kind, bank);
                     mesh.gravel(a, b, c, d, bed[j - 1].across() + 1.5, bed[j].across() + 1.5, from, to);
                     if (capStart) {
-                        mesh.face(Surface.BALLAST, a, d, d.with(Direction.Axis.Y, base),
-                            a.with(Direction.Axis.Y, base));
+                        mesh.ballast(a, d, d.with(Direction.Axis.Y, base), a.with(Direction.Axis.Y, base), 0, 0, 1, 1);
                     }
                     if (capEnd) {
-                        mesh.face(Surface.BALLAST, b, b.with(Direction.Axis.Y, base),
-                            c.with(Direction.Axis.Y, base), c);
+                        mesh.ballast(b, b.with(Direction.Axis.Y, base), c.with(Direction.Axis.Y, base), c, 0, 0, 1, 1);
                     }
                 }
                 prior = cell;
@@ -397,6 +394,8 @@ final class RailMesh {
         List<Double> cuts = roadbedCuts(path, start, end);
         var next = new Vec3[RAIL.length];
         var previous = new Vec3[RAIL.length];
+        var travelled = new double[RAIL.length - 1];
+        java.util.Arrays.fill(travelled, start);
         section(path, start, side, thickness, bank, verticalOffset, previous);
         for (int i = 1; i < cuts.size(); i++) {
             double from = cuts.get(i - 1);
@@ -405,7 +404,8 @@ final class RailMesh {
             section(path, to, side, thickness, bank, verticalOffset, next);
             for (int j = 1; j < RAIL.length; j++) {
                 Surface face = Math.max(RAIL[j - 1].height(), RAIL[j].height()) < 0.229 ? Surface.WEB : surface;
-                mesh.face(face, previous[j - 1], next[j - 1], next[j], previous[j]);
+                mesh.face(face, previous[j - 1], next[j - 1], next[j], previous[j], 0, travelled[j - 1]);
+                travelled[j - 1] += previous[j - 1].distanceTo(next[j - 1]);
             }
             var reuse = previous;
             previous = next;
@@ -430,16 +430,20 @@ final class RailMesh {
         void gravel(Vec3 a, Vec3 b, Vec3 c, Vec3 d, double uStart, double uEnd, double vStart, double vEnd) {
             double uTile = Math.floor(uStart + 1e-8);
             double vTile = Math.floor(vStart + 1e-8);
-            mapped(Surface.BALLAST, a, b, c, d, uStart - uTile, vStart - vTile, uEnd - uTile, vEnd - vTile);
+            ballast(a, b, c, d, uStart - uTile, vStart - vTile, uEnd - uTile, vEnd - vTile);
         }
 
-        void mapped(Surface surface, Vec3 a, Vec3 b, Vec3 c, Vec3 d,
-                    double uStart, double vStart, double uEnd, double vEnd) {
-            sink.add(owner, surface, a, b, c, d, uStart, vStart, uEnd, vEnd);
+        void ballast(Vec3 a, Vec3 b, Vec3 c, Vec3 d, double uStart, double vStart, double uEnd, double vEnd) {
+            sink.add(owner, Surface.BALLAST, new SurfaceUv.Vertex(a, uStart, vStart), new SurfaceUv.Vertex(b, uStart, vEnd),
+                new SurfaceUv.Vertex(c, uEnd, vEnd), new SurfaceUv.Vertex(d, uEnd, vStart));
         }
 
         void face(Surface surface, Vec3 a, Vec3 b, Vec3 c, Vec3 d) {
-            mapped(surface, a, b, c, d, 0, 0, 1, 1);
+            face(surface, a, b, c, d, 0, 0);
+        }
+
+        void face(Surface surface, Vec3 a, Vec3 b, Vec3 c, Vec3 d, double uStart, double vStart) {
+            SurfaceUv.face(a, b, c, d, uStart, vStart, (p, q, r, s) -> sink.add(owner, surface, p, q, r, s));
         }
 
         void prism(Surface surface, Vec3 center, List<Vec3> points, double low, double high) {
@@ -476,33 +480,13 @@ final class RailMesh {
             Vec3 c = center.add(front).add(left.scale(max)).add(0, top + bank.applyAsDouble(max), 0);
             Vec3 d = center.add(back).add(left.scale(max)).add(0, top + bank.applyAsDouble(max), 0);
             Vec3 down = new Vec3(0, bottom - top, 0);
-            if (surface == Surface.TIE) {
-                double width = max - min;
-                double depth = 8 * halfDepth;
-                double height = 4 * (top - bottom);
-                int sections = (int) Math.ceil(width);
-                for (int i = 0; i < sections; i++) {
-                    double u = Math.min(1, width - i);
-                    Vec3 p = a.lerp(d, i / width);
-                    Vec3 q = b.lerp(c, i / width);
-                    Vec3 r = b.lerp(c, (i + u) / width);
-                    Vec3 s = a.lerp(d, (i + u) / width);
-                    mapped(surface, p, q, r, s, 0, 0, u, depth / 4);
-                    mapped(surface, p, s, s.add(down), p.add(down), 0, 0, height / 4, u);
-                    mapped(surface, q.add(down), r.add(down), r, q, 0, 0, height / 4, u);
-                    if (bottom == 0) {
-                        mapped(surface, q.add(down), p.add(down), s.add(down), r.add(down), 0, 0, u, depth / 4);
-                    }
-                }
-                mapped(surface, a.add(down), b.add(down), b, a, 0, 0, height / 4, depth / 4);
-                mapped(surface, d, c, c.add(down), d.add(down), 0, 0, height / 4, depth / 4);
-            } else {
-                face(surface, a, b, c, d);
-                face(surface, a.add(down), b.add(down), b, a);
-                face(surface, d, c, c.add(down), d.add(down));
-                face(surface, a, d, d.add(down), a.add(down));
-                face(surface, b.add(down), c.add(down), c, b);
-            }
+            Vec3 aBottom = a.add(down), bBottom = b.add(down), cBottom = c.add(down), dBottom = d.add(down);
+            face(surface, a, b, c, d);
+            face(surface, aBottom, bBottom, b, a);
+            face(surface, d, c, cBottom, dBottom);
+            face(surface, aBottom, a, d, dBottom);
+            face(surface, cBottom, c, b, bBottom);
+            if (surface == Surface.TIE) face(surface, bBottom, aBottom, dBottom, cBottom);
         }
     }
 }

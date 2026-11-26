@@ -5,7 +5,6 @@ import com.mojang.serialization.MapCodec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import java.util.ArrayList;
 import java.util.List;
-import net.minecraft.client.model.geom.builders.UVPair;
 import net.minecraft.client.renderer.block.BlockAndTintGetter;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModelPart;
@@ -23,9 +22,6 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.event.RegisterBlockStateModels;
 import net.neoforged.neoforge.client.model.DelegateBlockStateModel;
 import net.neoforged.neoforge.client.model.block.CustomUnbakedBlockStateModel;
-import net.neoforged.neoforge.client.model.quad.BakedColors;
-import net.neoforged.neoforge.client.model.quad.BakedNormals;
-import org.joml.Vector3f;
 import org.jspecify.annotations.Nullable;
 
 final class RailEndModel extends DelegateBlockStateModel {
@@ -113,19 +109,8 @@ final class RailEndModel extends DelegateBlockStateModel {
     }
 
     private static void quad(List<BakedQuad> quads, Material.Baked texture, Vec3 a, Vec3 b, Vec3 c, Vec3 d) {
-        Vec3 face = b.subtract(a).cross(d.subtract(a)).normalize();
-        Direction direction = Direction.getApproximateNearest(face.x, face.y, face.z);
         var material = BakedQuad.MaterialInfo.of(texture, Transparency.NONE, -1, null, 0, false);
-        var normal = BakedNormals.of(BakedNormals.pack((float) face.x, (float) face.y, (float) face.z));
-        var sprite = texture.sprite();
-        quads.add(new BakedQuad(vertex(a), vertex(b), vertex(c), vertex(d),
-            UVPair.pack(sprite.getU(0), sprite.getV(1)), UVPair.pack(sprite.getU(1), sprite.getV(1)),
-            UVPair.pack(sprite.getU(1), sprite.getV(0)), UVPair.pack(sprite.getU(0), sprite.getV(0)),
-            direction, material, normal, BakedColors.DEFAULT));
-    }
-
-    private static Vector3f vertex(Vec3 point) {
-        return new Vector3f((float) point.x, (float) point.y, (float) point.z);
+        SurfaceUv.face(a, b, c, d, 0, 0, (p, q, r, s) -> quads.add(BakedSurface.quad(p, q, r, s, Vec3.ZERO, material, null)));
     }
 
     private record EndPart(List<BakedQuad> quads, Material.Baked particleMaterial) implements BlockStateModelPart {

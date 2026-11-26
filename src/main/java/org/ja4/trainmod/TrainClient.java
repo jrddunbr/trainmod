@@ -279,12 +279,12 @@ public final class TrainClient {
         private final float brakeY;
         private final float doorTravel;
         private final ModelPart gravel;
-        private final ModelPart drawbar;
+        private final MetricEntityModel drawbar;
         private final List<VehicleModels.Wheel> wheels;
         private final Map<Integer, ModelPart> boreRoadGear;
         private final List<Map<Integer, ModelPart>> wheelParts;
         private final Map<Integer, ModelPart> rods;
-        private final ModelPart piston;
+        private final MetricEntityModel piston;
         private final List<Map<Integer, ModelPart>> lights;
 
         VehicleRenderer(EntityRendererProvider.Context context, List<VehicleModels.Box> boxes, TrainVehicle.Kind kind) {
@@ -294,7 +294,7 @@ public final class TrainClient {
             MeshDefinition model = new MeshDefinition();
             model.getRoot().addOrReplaceChild("drawbar", CubeListBuilder.create().texOffs(0, 0)
                 .addBox(-1, -0.58f, -0.04f, 2, 1.16f, 16.08f), PartPose.ZERO);
-            drawbar = LayerDefinition.create(model, VehiclePaint.ATLAS_WIDTH, VehiclePaint.ATLAS_HEIGHT).bakeRoot().getChild("drawbar");
+            drawbar = metric(LayerDefinition.create(model, VehiclePaint.ATLAS_WIDTH, VehiclePaint.ATLAS_HEIGHT).bakeRoot().getChild("drawbar"));
             railLoads = kind != null && kind.showsLoad()
                 ? java.util.stream.IntStream.rangeClosed(1, 4).mapToObj(layers -> bakeVehicleCubes(VehicleModels.railCargo(kind, layers))).toList()
                 : List.of();
@@ -309,8 +309,8 @@ public final class TrainClient {
             boreRoadGear = kind == TrainVehicle.Kind.TUNNEL_BORE ? bakeVehicleCubes(VehicleModels.boreRoadGear()) : Map.of();
             wheelParts = wheels.stream().map(wheel -> bakeVehicleCubes(wheel.boxes())).toList();
             rods = wheels.isEmpty() ? Map.of() : bakeVehicleCubes(VehicleModels.steamRods(kind));
-            piston = wheels.isEmpty() ? null : bakeVehicleCubes(List.of(
-                new VehicleModels.Box(0xa9a7a1, -0.31f, -0.34f, 0, 0.62f, 0.68f, 16))).get(0xa9a7a1);
+            piston = wheels.isEmpty() ? null : metric(bakeVehicleCubes(List.of(
+                new VehicleModels.Box(0xa9a7a1, -0.31f, -0.34f, 0, 0.62f, 0.68f, 16))).get(0xa9a7a1));
             lights = kind == TrainVehicle.Kind.LOCOMOTIVE
                 ? List.of(bakeVehicleCubes(VehicleModels.headlight(kind, -1, false)),
                     bakeVehicleCubes(VehicleModels.headlight(kind, 1, false)),
@@ -321,6 +321,8 @@ public final class TrainClient {
         private static Map<Integer, ModelPart> bakeVehicleCubes(List<VehicleModels.Box> boxes) {
             return bakeColoredCubes(boxes, VehiclePaint.ATLAS_WIDTH, VehiclePaint.ATLAS_HEIGHT);
         }
+
+        private static MetricEntityModel metric(ModelPart part) { return new MetricEntityModel(part, 16f / VehiclePaint.ATLAS_WIDTH); }
 
         private static ModelPart gravel(TrainVehicle.Kind kind) {
             float halfWidth = VehicleModels.GONDOLA_FLOOR_HALF_WIDTH * kind.width / 2 - 0.04f;
@@ -429,8 +431,7 @@ public final class TrainClient {
                 pose.translate(tip.x, tip.y, tip.z);
                 pose.rotateDegrees(Axis.YP, (float) Math.toDegrees(Math.atan2(span.x, span.z)));
                 pose.rotateDegrees(Axis.XP, (float) -Math.toDegrees(Math.atan2(span.y, span.horizontalDistance())));
-                pose.scale(1, 1, (float) span.length());
-                collector.submitModelPart(drawbar, pose, MATERIAL, state.lightCoords, OverlayTexture.NO_OVERLAY,
+                collector.submitModelPart(drawbar.animatedLength(span.length()), pose, MATERIAL, state.lightCoords, OverlayTexture.NO_OVERLAY,
                     null, 0xff292c32, state.outlineColor);
                 pose.popPose();
             }
@@ -463,8 +464,7 @@ public final class TrainClient {
                 pose.pushPose();
                 pose.translate(side * 0.37, frontDriver.y() / 16 + crankY, frontDriver.z() / 16 + crankZ);
                 pose.rotateDegrees(Axis.XP, (float) Math.toDegrees(Math.atan2(crankY, run)));
-                pose.scale(1, 1, (float) Math.hypot(run, crankY));
-                collector.submitModelPart(piston, pose, MATERIAL, state.lightCoords, OverlayTexture.NO_OVERLAY,
+                collector.submitModelPart(piston.animatedLength(Math.hypot(run, crankY)), pose, MATERIAL, state.lightCoords, OverlayTexture.NO_OVERLAY,
                     null, 0xffa9a7a1, state.outlineColor);
                 pose.popPose();
             }

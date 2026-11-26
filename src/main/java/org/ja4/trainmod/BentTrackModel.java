@@ -22,8 +22,6 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.event.RegisterBlockStateModels;
 import net.neoforged.neoforge.client.model.DelegateBlockStateModel;
 import net.neoforged.neoforge.client.model.block.CustomUnbakedBlockStateModel;
-import net.neoforged.neoforge.client.model.quad.BakedNormals;
-import org.joml.Vector3f;
 import org.jspecify.annotations.Nullable;
 
 final class BentTrackModel extends DelegateBlockStateModel {
@@ -77,12 +75,7 @@ final class BentTrackModel extends DelegateBlockStateModel {
                 Vec3 q = TrackDamage.shift(shape, cell, a.lerp(b, u1).lerp(d.lerp(c, u1), v0));
                 Vec3 r = TrackDamage.shift(shape, cell, a.lerp(b, u1).lerp(d.lerp(c, u1), v1));
                 Vec3 s = TrackDamage.shift(shape, cell, a.lerp(b, u0).lerp(d.lerp(c, u0), v1));
-                Vec3 normal = r.subtract(p).cross(s.subtract(q)).normalize();
-                var bakedNormals = normal.lengthSqr() == 0 ? quad.bakedNormals()
-                    : BakedNormals.of(BakedNormals.pack((float) normal.x, (float) normal.y, (float) normal.z));
-                out.add(new BakedQuad(vertex(p.subtract(base)), vertex(q.subtract(base)), vertex(r.subtract(base)), vertex(s.subtract(base)),
-                    uv(quad, u0, v0), uv(quad, u1, v0), uv(quad, u1, v1), uv(quad, u0, v1),
-                    quad.direction(), quad.materialInfo(), bakedNormals, quad.bakedColors()));
+                BakedSurface.remap(out, quad, uv(quad, u0, v0), p, q, r, s, base);
             }
         }
     }
@@ -103,8 +96,6 @@ final class BentTrackModel extends DelegateBlockStateModel {
     private static double blend(float a, float b, float c, float d, double u, double v) {
         return net.minecraft.util.Mth.lerp(v, net.minecraft.util.Mth.lerp(u, a, b), net.minecraft.util.Mth.lerp(u, d, c));
     }
-
-    private static Vector3f vertex(Vec3 point) { return new Vector3f((float) point.x, (float) point.y, (float) point.z); }
 
     private record BentPart(BlockStateModelPart source, List<BakedQuad> quads) implements BlockStateModelPart {
         @Override

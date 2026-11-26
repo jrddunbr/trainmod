@@ -10,7 +10,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import net.minecraft.client.model.geom.builders.UVPair;
 import net.minecraft.client.renderer.block.BlockAndTintGetter;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModelPart;
@@ -27,9 +26,6 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.event.RegisterBlockStateModels;
 import net.neoforged.neoforge.client.model.DynamicBlockStateModel;
 import net.neoforged.neoforge.client.model.block.CustomUnbakedBlockStateModel;
-import net.neoforged.neoforge.client.model.quad.BakedColors;
-import net.neoforged.neoforge.client.model.quad.BakedNormals;
-import org.joml.Vector3f;
 import org.jspecify.annotations.Nullable;
 
 final class TrackRenderModel implements DynamicBlockStateModel {
@@ -160,33 +156,21 @@ final class TrackRenderModel implements DynamicBlockStateModel {
     private final class MeshOutput implements RailMesh.QuadSink {
         private final Map<BlockPos, List<BakedQuad>> quads;
         private BlockPos cell;
+        private Vec3 origin;
         private List<BakedQuad> current;
 
         MeshOutput(Map<BlockPos, List<BakedQuad>> quads) { this.quads = quads; }
 
         @Override
-        public void add(BlockPos cell, RailMesh.Surface surface, Vec3 a, Vec3 b, Vec3 c, Vec3 d,
-                        double uStart, double vStart, double uEnd, double vEnd) {
+        public void add(BlockPos cell, RailMesh.Surface surface, SurfaceUv.Vertex a, SurfaceUv.Vertex b, SurfaceUv.Vertex c,
+                        SurfaceUv.Vertex d) {
             if (!cell.equals(this.cell)) {
                 this.cell = cell;
+                origin = Vec3.atLowerCornerOf(cell).add(-0.5, 0, -0.5);
                 current = quads.computeIfAbsent(cell, ignored -> new ArrayList<>());
             }
-            var material = materials.get(surface);
-            var sprite = material.sprite();
-            float u0 = sprite.getU((float) uStart), u1 = sprite.getU((float) uEnd);
-            float v0 = sprite.getV(1 - (float) vStart), v1 = sprite.getV(1 - (float) vEnd);
-            Vec3 normal = b.subtract(a).cross(c.subtract(a)).normalize();
-            var direction = Direction.getApproximateNearest(normal.x, normal.y, normal.z);
-            var normals = BakedNormals.of(BakedNormals.pack((float) normal.x, (float) normal.y, (float) normal.z));
-            current.add(new BakedQuad(vertex(a, cell), vertex(b, cell), vertex(c, cell), vertex(d, cell),
-                UVPair.pack(u0, v0), UVPair.pack(u0, v1), UVPair.pack(u1, v1), UVPair.pack(u1, v0),
-                direction, material, normals, BakedColors.DEFAULT));
+            current.add(BakedSurface.quad(a, b, c, d, origin, materials.get(surface), null));
         }
-    }
-
-    private static Vector3f vertex(Vec3 point, BlockPos cell) {
-        return new Vector3f((float) (point.x - cell.getX() + 0.5), (float) (point.y - cell.getY()),
-            (float) (point.z - cell.getZ() + 0.5));
     }
 
     @Override

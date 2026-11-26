@@ -26,21 +26,24 @@ final class SwitchPointRenderer implements BlockEntityRenderer<SwitchPoints, Swi
     private static final Identifier STEEL = Identifier.fromNamespaceAndPath(Trainmod.ID, "textures/entity/paint.png");
     private static final int HEAD = 0xffa9aaa5;
     private static final int WEB = 0xff595957;
+    private static final float TILE_SIZE = 16 / 128f;
     private final Map<SwitchLayout.Panel, List<List<Quad>>> stoppedPoses = new HashMap<>();
 
-    private record Quad(Vec3 a, Vec3 b, Vec3 c, Vec3 d, int color) {
+    private record Quad(SurfaceUv.Vertex a, SurfaceUv.Vertex b, SurfaceUv.Vertex c, SurfaceUv.Vertex d, int color) {
         void draw(PoseStack.Pose pose, VertexConsumer buffer, int light) {
-            Vec3 normal = b.subtract(a).cross(c.subtract(a)).normalize();
-            vertex(pose, buffer, a, normal, 0, 0, color, light);
-            vertex(pose, buffer, b, normal, 0, 1, color, light);
-            vertex(pose, buffer, c, normal, 1, 1, color, light);
-            vertex(pose, buffer, d, normal, 1, 0, color, light);
+            Vec3 normal = b.point().subtract(a.point()).cross(c.point().subtract(a.point())).normalize();
+            vertex(pose, buffer, a, normal, color, light);
+            vertex(pose, buffer, b, normal, color, light);
+            vertex(pose, buffer, c, normal, color, light);
+            vertex(pose, buffer, d, normal, color, light);
         }
 
-        private static void vertex(PoseStack.Pose pose, VertexConsumer buffer, Vec3 point, Vec3 normal,
-                                   float u, float v, int color, int light) {
+        private static void vertex(PoseStack.Pose pose, VertexConsumer buffer, SurfaceUv.Vertex vertex, Vec3 normal,
+                                   int color, int light) {
+            Vec3 point = vertex.point();
             buffer.addVertex(pose, (float) (point.x + 0.5), (float) point.y, (float) (point.z + 0.5))
-                .setColor(color).setUv(u, v).setOverlay(OverlayTexture.NO_OVERLAY).setLight(light)
+                .setColor(color).setUv((float) vertex.u() * TILE_SIZE, (1 - (float) vertex.v()) * TILE_SIZE)
+                .setOverlay(OverlayTexture.NO_OVERLAY).setLight(light)
                 .setNormal(pose, (float) normal.x, (float) normal.y, (float) normal.z);
         }
     }
@@ -131,9 +134,9 @@ final class SwitchPointRenderer implements BlockEntityRenderer<SwitchPoints, Swi
             for (int j = 1; j < profile.length; j++) {
                 var low = profile[j - 1];
                 var high = profile[j];
-                faces.add(new Quad(section(start, startSide, low), section(end, endSide, low),
+                face(faces, section(start, startSide, low), section(end, endSide, low),
                     section(end, endSide, high), section(start, startSide, high),
-                    Math.max(low.height(), high.height()) > 0.229 ? HEAD : WEB));
+                    Math.max(low.height(), high.height()) > 0.229 ? HEAD : WEB);
             }
         }
     }
@@ -148,9 +151,13 @@ final class SwitchPointRenderer implements BlockEntityRenderer<SwitchPoints, Swi
         Vec3 a = first.add(width).add(0, 0.170, 0), b = second.add(width).add(0, 0.170, 0);
         Vec3 c = second.subtract(width).add(0, 0.170, 0), d = first.subtract(width).add(0, 0.170, 0);
         Vec3 down = new Vec3(0, -0.023, 0);
-        faces.add(new Quad(a, b, c, d, WEB));
-        faces.add(new Quad(a.add(down), b.add(down), b, a, WEB));
-        faces.add(new Quad(d, c, c.add(down), d.add(down), WEB));
+        face(faces, a, b, c, d, WEB);
+        face(faces, a.add(down), b.add(down), b, a, WEB);
+        face(faces, d, c, c.add(down), d.add(down), WEB);
+    }
+
+    private static void face(List<Quad> faces, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int color) {
+        SurfaceUv.face(a, b, c, d, 0, 0, (p, q, r, s) -> faces.add(new Quad(p, q, r, s, color)));
     }
 
     @Override

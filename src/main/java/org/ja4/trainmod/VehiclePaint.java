@@ -10,9 +10,9 @@ import java.util.Set;
 
 /** Packed panel textures use the same texel density on both axes. */
 final class VehiclePaint {
-    static final int ATLAS_WIDTH = 512;
+    static final int ATLAS_WIDTH = 256;
     static final int ATLAS_HEIGHT = 256;
-    static final int TEXELS_PER_UNIT = 4;
+    static final int TEXELS_PER_UNIT = 2;
     static final int PADDING = 2;
     static final Map<Pattern, Region> REGIONS = pack();
 

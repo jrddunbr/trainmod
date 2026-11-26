@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Set;
 import javax.imageio.ImageIO;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.world.phys.Vec3;
 
 public final class TrainAssets {
@@ -110,8 +111,7 @@ public final class TrainAssets {
         write("assets/trainmod/blockstates/ballast.json", Map.of("variants", Map.of("", Map.of(
             "type", "trainmod:adjacent_ballast", "foundation", true, "separate", ref("ballast_surface")))));
         model("ballast_item", Map.of("rock", "minecraft:block/gravel", "particle", "minecraft:block/gravel"),
-            List.of(cube(0, 0, 0, 16, 5, 16, "rock"), cube(2, 5, 0, 14, 10, 16, "rock"),
-                cube(4, 10, 0, 12, 15, 16, "rock")));
+            List.of(ballastItemBox(0, 0, 16, 5), ballastItemBox(2, 5, 14, 10), ballastItemBox(4, 10, 12, 15)));
         item("ballast", "block/ballast_item");
         loot("ballast", "trainmod:ballast");
 
@@ -135,6 +135,14 @@ public final class TrainAssets {
         item("signal", "block/signal_retired");
         loot("switch_stand", "trainmod:switch_stand");
         loot("signal", "trainmod:signal");
+    }
+
+    private static Map<String, Object> ballastItemBox(double left, double bottom, double right, double top) {
+        var box = cube(left, bottom, 0, right, top, 16, "rock");
+        var faces = new HashMap<String, Object>();
+        FACES.forEach(side -> faces.put(side, cubeUv("#rock", 16, 16)));
+        box.put("faces", faces);
+        return box;
     }
 
     private void railExtruder() throws IOException {
@@ -323,7 +331,7 @@ public final class TrainAssets {
         var parts = new ArrayList<Map<String, Object>>();
         double left = shift + (part == 0 ? 2 : 0);
         double right = shift + (part == 2 ? 14 : 16);
-        double tieHalfWidth = 2 * RailMesh.TIE_HALF_WIDTH * 16;
+        double tieHalfWidth = 2;
         double tieBottom = 16 - 2 * tieHalfWidth;
         double spanOffset = 16 * (part - WideGirder.CENTER) - shift;
         if (part != WideGirder.CENTER) {
@@ -768,8 +776,10 @@ public final class TrainAssets {
     }
 
     private void model(String id, Map<String, String> textures, List<Map<String, Object>> boxes) throws IOException {
+        var elements = new ArrayList<Map<String, Object>>();
+        for (var box : boxes) addTiledCuboid(elements, box);
         write("assets/trainmod/models/block/" + id + ".json",
-            Map.of("parent", "minecraft:block/block", "ambientocclusion", false, "textures", textures, "elements", boxes));
+            Map.of("parent", "minecraft:block/block", "ambientocclusion", false, "textures", textures, "elements", elements));
     }
 
     private void item(String id, String model) throws IOException {
@@ -784,12 +794,66 @@ public final class TrainAssets {
     private static Map<String, Object> cube(double x1, double y1, double z1, double x2, double y2, double z2,
                                              String texture) {
         Map<String, Object> faces = new HashMap<>();
-        FACES.forEach(side -> faces.put(side, Map.of("texture", "#" + texture, "uv", List.of(0, 0, 16, 16))));
+        FACES.forEach(side -> faces.put(side, Map.of("texture", "#" + texture)));
         Map<String, Object> result = new HashMap<>();
         result.put("from", vector(x1, y1, z1));
         result.put("to", vector(x2, y2, z2));
         result.put("faces", faces);
         return result;
+    }
+
+    private static void addTiledCuboid(List<Map<String, Object>> elements, Map<String, Object> box) {
+        var faces = new HashMap<String, Object>();
+        var from = coordinates(box.get("from"));
+        var to = coordinates(box.get("to"));
+        var sides = (Map<?, ?>) box.get("faces");
+        for (Direction side : Direction.values()) {
+            var face = (Map<?, ?>) sides.get(side.getName());
+            if (face == null) continue;
+            if (face.containsKey("uv")) {
+                faces.put(side.getName(), face);
+                continue;
+            }
+            int axis = side.getAxis().ordinal();
+            int u = axis == 0 ? 2 : 0, v = axis == 1 ? 2 : 1;
+            double width = to[u] - from[u], height = to[v] - from[v];
+            if (width <= 16 && height <= 16) {
+                faces.put(side.getName(), cubeUv(face.get("texture"), width, height));
+                continue;
+            }
+            // Keep only the exterior face on each tile so internal cuts never render.
+            for (double left = from[u]; left < to[u]; left += 16) {
+                for (double bottom = from[v]; bottom < to[v]; bottom += 16) {
+                    var min = from.clone();
+                    var max = to.clone();
+                    min[axis] = max[axis] = side.getAxisDirection() == Direction.AxisDirection.POSITIVE ? to[axis] : from[axis];
+                    min[u] = left;
+                    min[v] = bottom;
+                    max[u] = Math.min(left + 16, to[u]);
+                    max[v] = Math.min(bottom + 16, to[v]);
+                    var tile = new HashMap<>(box);
+                    tile.put("from", vector(min[0], min[1], min[2]));
+                    tile.put("to", vector(max[0], max[1], max[2]));
+                    tile.put("faces", Map.of(side.getName(), cubeUv(face.get("texture"), max[u] - min[u], max[v] - min[v])));
+                    elements.add(tile);
+                }
+            }
+        }
+        if (!faces.isEmpty()) {
+            var result = new HashMap<>(box);
+            result.put("faces", faces);
+            elements.add(result);
+        }
+    }
+
+    private static double[] coordinates(Object vertex) {
+        var coordinates = (List<?>) vertex;
+        return new double[]{((Number) coordinates.get(0)).doubleValue(), ((Number) coordinates.get(1)).doubleValue(),
+            ((Number) coordinates.get(2)).doubleValue()};
+    }
+
+    private static Map<String, Object> cubeUv(Object texture, double width, double height) {
+        return Map.of("texture", texture, "uv", List.of(0, 0, round(width), round(height)));
     }
 
     private static Map<String, Object> rotated(double x1, double y1, double z1, double x2, double y2, double z2,
@@ -832,6 +896,9 @@ public final class TrainAssets {
     }
 
     private void saveImage(String path, BufferedImage image) throws IOException {
+        if ((path.startsWith("block/") || path.startsWith("item/")) && ((image.getWidth() | image.getHeight()) & 15) != 0) {
+            throw new IOException("Texture " + path + " needs dimensions divisible by 16 for mip level 4");
+        }
         Path file = root.resolve("assets/trainmod/textures/" + path + ".png");
         Files.createDirectories(file.getParent());
         ImageIO.write(image, "png", file.toFile());

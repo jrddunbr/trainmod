@@ -16,26 +16,22 @@ final class ObjMesh {
     ObjMesh(BlockPos owner, boolean shadeQuads, String materialLibrary) {
         this.owner = owner;
         this.shadeQuads = shadeQuads;
-        String object = materialLibrary.equals("railway") ? "rail" : materialLibrary;
-        text = new StringBuilder("mtllib trainmod:models/block/" + materialLibrary + ".mtl\no " + object + "\n");
-        uv(0, 0);
-        uv(0, 1);
-        uv(1, 1);
-        uv(1, 0);
+        text = new StringBuilder("mtllib trainmod:models/block/" + materialLibrary + ".mtl\no " + materialLibrary + "\n");
     }
 
     boolean shadeQuads() { return shadeQuads; }
 
     void face(String material, Vec3 a, Vec3 b, Vec3 c, Vec3 d) {
-        face(material, a, b, c, d, 1, 2, 3, 4);
+        SurfaceUv.face(a, b, c, d, 0, 0, (p, q, r, s) -> face(material, p, q, r, s));
     }
 
-    private void face(String material, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int uva, int uvb, int uvc, int uvd) {
+    private void face(String material, SurfaceUv.Vertex a, SurfaceUv.Vertex b, SurfaceUv.Vertex c, SurfaceUv.Vertex d) {
         if (!material.equals(currentMaterial)) {
             text.append("usemtl ").append(material).append('\n');
             currentMaterial = material;
         }
-        int first = vertex(a), second = vertex(b), third = vertex(c), fourth = vertex(d);
+        int first = vertex(a.point()), second = vertex(b.point()), third = vertex(c.point()), fourth = vertex(d.point());
+        int uva = uv(a.u(), a.v()), uvb = uv(b.u(), b.v()), uvc = uv(c.u(), c.v()), uvd = uv(d.u(), d.v());
         text.append("f ").append(first).append('/').append(uva)
             .append(' ').append(second).append('/').append(uvb)
             .append(' ').append(third).append('/').append(uvc)

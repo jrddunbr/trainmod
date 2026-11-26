@@ -32,17 +32,17 @@ final class CatenaryRenderer implements BlockEntityRenderer<CatenaryTower.Anchor
     private final Map<CatenaryTower.Anchor, Assembly> cache = new WeakHashMap<>();
     private final ModelPart foot = part(CONCRETE, -3.5f, 0, -3.5f, 7,
         (float) (16 * TrackGeometry.RAIL_HEIGHT), 7);
-    private final ModelPart wire = part(WIRE, -0.27f, -0.27f, 0, 0.54f, 0.54f, 16);
-    private final ModelPart post = TrainClient.bakeColoredCubes(List.of(
+    private final MetricEntityModel wire = metric(part(WIRE, -0.27f, -0.27f, 0, 0.54f, 0.54f, 16));
+    private final MetricEntityModel post = metric(TrainClient.bakeColoredCubes(List.of(
         new VehicleModels.Box(STEEL, -1.85f, 0, -1.55f, 3.7f, 41, 0.55f),
         new VehicleModels.Box(STEEL, -1.85f, 0, 1, 3.7f, 41, 0.55f),
-        new VehicleModels.Box(STEEL, -0.42f, 0, -1, 0.84f, 41, 2))).get(STEEL);
-    private final ModelPart arm = TrainClient.bakeColoredCubes(List.of(
+        new VehicleModels.Box(STEEL, -0.42f, 0, -1, 0.84f, 41, 2))).get(STEEL));
+    private final MetricEntityModel arm = metric(TrainClient.bakeColoredCubes(List.of(
         new VehicleModels.Box(STEEL, -1.15f, -1, 0, 2.3f, 0.48f, 16),
         new VehicleModels.Box(STEEL, -1.15f, 0.52f, 0, 2.3f, 0.48f, 16),
-        new VehicleModels.Box(STEEL, -0.39f, -0.52f, 0, 0.78f, 1.04f, 16))).get(STEEL);
-    private final ModelPart ceilingHanger = part(STEEL, -1f, 0, -1f, 2, 16, 2);
-    private final ModelPart hanger = part(STEEL, -0.52f, 0, -0.52f, 1.04f, 16, 1.04f);
+        new VehicleModels.Box(STEEL, -0.39f, -0.52f, 0, 0.78f, 1.04f, 16))).get(STEEL));
+    private final MetricEntityModel ceilingHanger = metric(part(STEEL, -1f, 0, -1f, 2, 16, 2));
+    private final MetricEntityModel hanger = metric(part(STEEL, -0.52f, 0, -0.52f, 1.04f, 16, 1.04f));
     private final ModelPart insulator = part(INSULATOR, -1.25f, 0, -1.25f, 2.5f, 3, 2.5f);
 
     private record Assembly(long tick, CatenaryTower.Kind kind, BlockPos step, boolean diagonal, List<Direction> neighbors,
@@ -169,8 +169,7 @@ final class CatenaryRenderer implements BlockEntityRenderer<CatenaryTower.Anchor
         pose.translate(location.x, location.y, location.z);
         pose.rotateDegrees(Axis.YP, (float) Math.toDegrees(Math.atan2(across.x, across.z)));
         submitPart(foot, CONCRETE, Vec3.ZERO, state, pose, collector);
-        pose.scale(1, (float) ((beamHeight + 1 / 16.0) / (41 / 16.0)), 1);
-        submitPart(post, STEEL, Vec3.ZERO, state, pose, collector);
+        submitPart(post.vertical((beamHeight + 1 / 16.0) / (41 / 16.0)), STEEL, Vec3.ZERO, state, pose, collector);
         pose.popPose();
     }
 
@@ -181,28 +180,26 @@ final class CatenaryRenderer implements BlockEntityRenderer<CatenaryTower.Anchor
         vertical(hanger, new Vec3(contact.x, Math.min(top, beamHeight), contact.z), length, state, pose, collector);
     }
 
-    private static void vertical(ModelPart part, Vec3 start, double length, State state, PoseStack pose,
+    private static void vertical(MetricEntityModel part, Vec3 start, double length, State state, PoseStack pose,
                                  SubmitNodeCollector collector) {
-        pose.pushPose();
-        pose.translate(start.x, start.y, start.z);
-        pose.scale(1, (float) length, 1);
-        submitPart(part, STEEL, Vec3.ZERO, state, pose, collector);
-        pose.popPose();
+        submitPart(part.vertical(length), STEEL, start, state, pose, collector);
     }
 
     private static ModelPart part(int color, float x, float y, float z, float width, float height, float length) {
         return TrainClient.bakeColoredCubes(List.of(new VehicleModels.Box(color, x, y, z, width, height, length))).get(color);
     }
 
-    private static void beam(ModelPart part, int color, Vec3 start, Vec3 end, State state, PoseStack pose, SubmitNodeCollector collector) {
+    private static MetricEntityModel metric(ModelPart part) { return new MetricEntityModel(part, 16 / 128f); }
+
+    private static void beam(MetricEntityModel part, int color, Vec3 start, Vec3 end, State state, PoseStack pose,
+                             SubmitNodeCollector collector) {
         Vec3 delta = end.subtract(start);
         if (delta.lengthSqr() < 1e-8) return;
         pose.pushPose();
         pose.translate(start.x, start.y, start.z);
         pose.rotateDegrees(Axis.YP, (float) Math.toDegrees(Math.atan2(delta.x, delta.z)));
         pose.rotateDegrees(Axis.XP, (float) -Math.toDegrees(Math.atan2(delta.y, delta.horizontalDistance())));
-        pose.scale(1, 1, (float) delta.length());
-        submitPart(part, color, Vec3.ZERO, state, pose, collector);
+        submitPart(part.length(delta.length()), color, Vec3.ZERO, state, pose, collector);
         pose.popPose();
     }
 
