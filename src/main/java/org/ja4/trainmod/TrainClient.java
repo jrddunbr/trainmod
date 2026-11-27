@@ -21,17 +21,22 @@ import net.minecraft.client.renderer.entity.EntityRendererProvider;
 import net.minecraft.client.renderer.entity.DisplayRenderer;
 import net.minecraft.client.renderer.entity.state.EntityRenderState;
 import net.minecraft.client.renderer.extract.LevelExtractor;
+import net.minecraft.client.renderer.item.ItemModelResolver;
+import net.minecraft.client.renderer.item.ItemStackRenderState;
 import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.client.renderer.rendertype.RenderTypes;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.gizmos.Gizmos;
 import net.minecraft.resources.Identifier;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.projectile.ProjectileUtil;
+import net.minecraft.world.item.ItemDisplayContext;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
@@ -231,8 +236,10 @@ public final class TrainClient {
         float yaw;
         float pitch;
         float bank;
-        int railLayers;
-        float gravelFill;
+        FreightLoad freight = FreightLoad.EMPTY;
+        final ItemStackRenderState[] crateItems = {new ItemStackRenderState(), new ItemStackRenderState(), new ItemStackRenderState()};
+        FreightLoad.Bulk bulk = FreightLoad.Bulk.NONE;
+        float bulkFill;
         float leftDoorProgress;
         float rightDoorProgress;
         float handbrakeAngle;
@@ -275,15 +282,25 @@ public final class TrainClient {
         private static final RenderType MATERIAL = RenderTypes.entityCutout(
             Identifier.fromNamespaceAndPath(Trainmod.ID, "textures/entity/vehicle_paint.png"));
         private static final RenderType GRAVEL = RenderTypes.entityCutout(Identifier.withDefaultNamespace("textures/block/gravel.png"));
+        private static final RenderType COBBLESTONE = RenderTypes.entityCutout(Identifier.withDefaultNamespace("textures/block/cobblestone.png"));
+        private static final RenderType DIRT = RenderTypes.entityCutout(Identifier.withDefaultNamespace("textures/block/dirt.png"));
+        private static final float BULK_HEIGHT = 5.38f;
         private final Map<Integer, ModelPart> groups;
-        private final List<Map<Integer, ModelPart>> railLoads;
+        private final ItemModelResolver itemModels;
+        private final boolean flatcar;
+        private final Map<FreightLoad, Map<Integer, ModelPart>> freightModels = new LinkedHashMap<>(16, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<FreightLoad, Map<Integer, ModelPart>> eldest) {
+                return size() > 64;
+            }
+        };
         private final Map<Integer, ModelPart> leftDoor;
         private final Map<Integer, ModelPart> rightDoor;
         private final Map<Integer, ModelPart> brakeWheel;
         private final double brakeX;
         private final float brakeY;
         private final float doorTravel;
-        private final ModelPart gravel;
+        private final ModelPart bulkSurface;
         private final MetricEntityModel drawbar;
         private final List<VehicleModels.Wheel> wheels;
         private final Map<Integer, ModelPart> boreRoadGear;
@@ -302,16 +319,15 @@ public final class TrainClient {
             model.getRoot().addOrReplaceChild("drawbar", CubeListBuilder.create().texOffs(0, 0)
                 .addBox(-1, -0.58f, -0.04f, 2, 1.16f, 16.08f), PartPose.ZERO);
             drawbar = metric(LayerDefinition.create(model, VehiclePaint.ATLAS_WIDTH, VehiclePaint.ATLAS_HEIGHT).bakeRoot().getChild("drawbar"));
-            railLoads = kind != null && kind.showsLoad()
-                ? java.util.stream.IntStream.rangeClosed(1, 4).mapToObj(layers -> bakeVehicleCubes(VehicleModels.railCargo(kind, layers))).toList()
-                : List.of();
+            itemModels = context.getItemModelResolver();
+            flatcar = kind == TrainVehicle.Kind.FLATCAR;
             leftDoor = kind == TrainVehicle.Kind.BOXCAR ? bakeVehicleCubes(VehicleModels.doors(kind, true)) : Map.of();
             rightDoor = kind == TrainVehicle.Kind.BOXCAR ? bakeVehicleCubes(VehicleModels.doors(kind, false)) : Map.of();
             brakeWheel = kind != null && !kind.powered ? bakeVehicleCubes(VehicleModels.brakeWheel(kind)) : Map.of();
             brakeX = kind != null ? kind.brakeWheelOffset() : 0;
             brakeY = kind != null ? kind.brakeWheelHeight() / 16 : 0;
             doorTravel = kind == TrainVehicle.Kind.BOXCAR ? VehicleModels.OPEN_DOOR_SHIFT * kind.length / 40 : 0;
-            gravel = kind == TrainVehicle.Kind.GONDOLA || kind == TrainVehicle.Kind.BALLAST_CAR ? gravel(kind) : null;
+            bulkSurface = kind == TrainVehicle.Kind.GONDOLA || kind == TrainVehicle.Kind.BALLAST_CAR ? bulkSurface(kind) : null;
             wheels = kind == TrainVehicle.Kind.STEAM_LOCOMOTIVE ? VehicleModels.steamWheels(kind) : List.of();
             boreRoadGear = kind == TrainVehicle.Kind.TUNNEL_BORE ? bakeVehicleCubes(VehicleModels.boreRoadGear()) : Map.of();
             wheelParts = wheels.stream().map(wheel -> bakeVehicleCubes(wheel.boxes())).toList();
@@ -339,13 +355,13 @@ public final class TrainClient {
 
         private static MetricEntityModel metric(ModelPart part) { return new MetricEntityModel(part, 16f / VehiclePaint.ATLAS_WIDTH); }
 
-        private static ModelPart gravel(TrainVehicle.Kind kind) {
+        private static ModelPart bulkSurface(TrainVehicle.Kind kind) {
             float halfWidth = VehicleModels.GONDOLA_FLOOR_HALF_WIDTH * kind.width / 2 - 0.04f;
             float halfLength = VehicleModels.GONDOLA_FLOOR_HALF_LENGTH * kind.length / 2.5f - 0.04f;
             var mesh = new MeshDefinition();
-            mesh.getRoot().addOrReplaceChild("gravel", CubeListBuilder.create().texOffs(0, 0)
-                .addBox(-halfWidth, 0, -halfLength, 2 * halfWidth, 5.38f, 2 * halfLength), PartPose.ZERO);
-            return LayerDefinition.create(mesh, 16, 16).bakeRoot().getChild("gravel");
+            mesh.getRoot().addOrReplaceChild("bulk", CubeListBuilder.create().texOffs(0, 0)
+                .addBox(-halfWidth, 0, -halfLength, 2 * halfWidth, BULK_HEIGHT, 2 * halfLength), PartPose.ZERO);
+            return LayerDefinition.create(mesh, 16, 16).bakeRoot().getChild("bulk");
         }
 
         @Override
@@ -358,8 +374,13 @@ public final class TrainClient {
             state.pitch = Mth.lerp(partial, entity.xRotO, entity.getXRot());
             if (entity instanceof TrainVehicle train) {
                 state.bank = train.renderBank(partial);
-                state.railLayers = train.railLayers();
-                state.gravelFill = train.gravelFill();
+                state.freight = train.freightLoad();
+                for (int i = 0; i < state.freight.crateItems().size(); i++) {
+                    var item = BuiltInRegistries.ITEM.getValue(state.freight.crateItems().get(i));
+                    itemModels.updateForNonLiving(state.crateItems[i], new ItemStack(item), ItemDisplayContext.FIXED, entity);
+                }
+                state.bulk = train.kind == TrainVehicle.Kind.BALLAST_CAR ? FreightLoad.Bulk.GRAVEL : state.freight.bulk();
+                state.bulkFill = train.kind == TrainVehicle.Kind.BALLAST_CAR ? train.gravelFill() : state.freight.fillPercent() / 100f;
                 state.leftDoorProgress = train.doorProgress(true, partial);
                 state.rightDoorProgress = train.doorProgress(false, partial);
                 state.handbrakeAngle = train.handbrakeAngle(partial);
@@ -391,7 +412,11 @@ public final class TrainClient {
 
         @Override
         protected AABB getBoundingBoxForCulling(T entity, float partial) {
-            return super.getBoundingBoxForCulling(entity, partial).inflate(0.5);
+            AABB bounds = super.getBoundingBoxForCulling(entity, partial).inflate(0.5);
+            if (entity instanceof TrainVehicle train && train.freightLoad().hasModel()) {
+                return bounds.expandTowards(0, 1.45, 0);
+            }
+            return bounds;
         }
 
         @Override
@@ -434,17 +459,7 @@ public final class TrainClient {
                 craftingTable.submit(pose, collector, state.lightCoords, OverlayTexture.NO_OVERLAY, state.outlineColor);
                 pose.popPose();
             }
-            if (state.railLayers > 0 && !railLoads.isEmpty()) {
-                submitParts(railLoads.get(state.railLayers - 1), state, pose, collector);
-            }
-            if (gravel != null && state.gravelFill > 0) {
-                pose.pushPose();
-                pose.translate(0, VehicleModels.DECK_HEIGHT, 0);
-                pose.scale(1, state.gravelFill, 1);
-                collector.submitModelPart(gravel, pose, GRAVEL, state.lightCoords, OverlayTexture.NO_OVERLAY,
-                    null, 0xffffffff, state.outlineColor);
-                pose.popPose();
-            }
+            submitFreight(state, pose, collector);
             submitDoor(leftDoor, state.leftDoorProgress, state, pose, collector);
             submitDoor(rightDoor, state.rightDoorProgress, state, pose, collector);
             if (!brakeWheel.isEmpty()) {
@@ -515,6 +530,54 @@ public final class TrainClient {
                                         SubmitNodeCollector collector) {
             parts.forEach((color, model) -> collector.submitModelPart(model, pose, MATERIAL, state.lightCoords,
                 OverlayTexture.NO_OVERLAY, null, 0xff000000 | color, state.outlineColor));
+        }
+
+        private void submitFreight(VehicleState state, PoseStack pose, SubmitNodeCollector collector) {
+            if (bulkSurface != null && state.bulkFill > 0) {
+                RenderType texture = switch (state.bulk) {
+                    case COBBLESTONE -> COBBLESTONE;
+                    case DIRT -> DIRT;
+                    default -> GRAVEL;
+                };
+                pose.pushPose();
+                pose.translate(0, VehicleModels.DECK_HEIGHT, 0);
+                pose.scale(1, state.bulkFill, 1);
+                collector.submitModelPart(bulkSurface, pose, texture, state.lightCoords, OverlayTexture.NO_OVERLAY,
+                    null, 0xffffffff, state.outlineColor);
+                pose.popPose();
+            }
+            if (state.freight.hasModel()) {
+                var parts = freightModels.computeIfAbsent(state.freight, load -> bakeVehicleCubes(FreightModels.cargo(load, flatcar)));
+                pose.pushPose();
+                pose.translate(0, state.bulkFill * BULK_HEIGHT / 16, 0);
+                submitParts(parts, state, pose, collector);
+                submitCrateItems(state, pose, collector);
+                pose.popPose();
+            }
+        }
+
+        private static void submitCrateItems(VehicleState state, PoseStack pose, SubmitNodeCollector collector) {
+            for (int i = 0; i < state.freight.crateItems().size(); i++) {
+                var item = state.crateItems[i];
+                if (item.isEmpty()) continue;
+                AABB bounds = item.getModelBoundingBox();
+                Vec3 center = bounds.getCenter();
+                float size = (float) (0.15 / Math.max(0.01, Math.max(bounds.getXsize(), bounds.getYsize())));
+                float width = size * FreightModels.crateItemWidth(state.freight);
+                float depth = (float) Math.min(size, 0.036 / Math.max(0.01, bounds.getZsize()));
+                for (int crate = 0; crate < state.freight.crateCount(); crate++) {
+                    for (int side : new int[]{-1, 1}) {
+                        float z = FreightModels.crateItemZ(state.freight, crate, i, side);
+                        pose.pushPose();
+                        pose.translate(side * (FreightModels.CRATE_SIDE / 16 + 0.02), FreightModels.CRATE_ITEM_HEIGHT / 16, z / 16);
+                        pose.rotateDegrees(Axis.YP, side * 90);
+                        pose.scale(width, size, depth);
+                        pose.translate(-center.x, -center.y, -center.z);
+                        item.submit(pose, collector, state.lightCoords, OverlayTexture.NO_OVERLAY, state.outlineColor);
+                        pose.popPose();
+                    }
+                }
+            }
         }
     }
 }

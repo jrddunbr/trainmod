@@ -110,14 +110,15 @@ final class TrackWork {
         var inventory = new WorkCargo();
         boolean usesSupplies = !driver.getAbilities().instabuild;
         if (lay && usesSupplies) {
+            var supplyCargo = bore.boreSupplyCargo(level, gondolas);
             int rails = bridge ? BRIDGE_RAILS_PER_BLOCK : RAILS_PER_BLOCK;
-            if (!inventory.supply(bore.supplies, TrainVehicle.RAIL_SUPPLY, gondolas, Trainmod.RAIL.get(), rails)) {
+            if (!inventory.supply(bore.supplies, TrainVehicle.RAIL_SUPPLY, supplyCargo, Trainmod.RAIL.get(), rails)) {
                 return new Issue("bore_need_rail", rails);
             }
-            if (!inventory.supply(bore.supplies, TrainVehicle.TIE_SUPPLY, gondolas, Trainmod.TIE_BUNDLE.get(), 1)) {
+            if (!inventory.supply(bore.supplies, TrainVehicle.TIE_SUPPLY, supplyCargo, Trainmod.TIE_BUNDLE.get(), 1)) {
                 return new Issue("bore_need_ties");
             }
-            if (needsStone && !inventory.supply(bore.supplies, TrainVehicle.STONE_SUPPLY, gondolas, Items.COBBLESTONE, 1)) {
+            if (needsStone && !inventory.supply(bore.supplies, TrainVehicle.STONE_SUPPLY, supplyCargo, Items.COBBLESTONE, 1)) {
                 return new Issue("bore_need_stone");
             }
         }

@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -32,6 +33,7 @@ public final class TrainAssets {
         assets.railwayBlocks();
         assets.infrastructure();
         assets.vehicles();
+        assets.festive();
         assets.tools();
         assets.recipes();
     }
@@ -684,6 +686,13 @@ public final class TrainAssets {
 
     private void recipes() throws IOException {
         shapeless("ballast", 2, "minecraft:gravel");
+        shapeless("present", 1, "minecraft:paper", "minecraft:red_wool", "minecraft:gold_nugget");
+        shapeless("christmas_tree", 1, "minecraft:spruce_sapling", "minecraft:spruce_leaves", "minecraft:red_dye", "minecraft:gold_nugget");
+        recipe("sleigh", 1, List.of("R R", "PPP", "I I"), Map.of("R", "red_wool", "P", "#minecraft:planks", "I", "iron_ingot"));
+        shapeless("wreath", 1, "minecraft:spruce_leaves", "minecraft:red_dye", "minecraft:string");
+        shapeless("wreath_crate", 1, "trainmod:wreath", "trainmod:wreath", "trainmod:wreath", "trainmod:wreath",
+            "minecraft:spruce_planks");
+        shapeless("unpack_wreath_crate", "wreath", 4, "trainmod:wreath_crate");
         stonecutting("ballast", 2, "minecraft:gravel");
         write("data/trainmod/tags/item/diesel_buckets.json", Map.of("values",
             List.of(Map.of("id", "#" + VehicleFuel.EXTERNAL_DIESEL.location(), "required", false), "trainmod:diesel_bucket")));
@@ -742,8 +751,12 @@ public final class TrainAssets {
     }
 
     private void shapeless(String id, int count, String... ingredients) throws IOException {
+        shapeless(id, id, count, ingredients);
+    }
+
+    private void shapeless(String id, String result, int count, String... ingredients) throws IOException {
         write("data/trainmod/recipe/" + id + ".json", Map.of("type", "minecraft:crafting_shapeless",
-            "ingredients", List.of(ingredients), "result", Map.of("id", "trainmod:" + id, "count", count)));
+            "ingredients", List.of(ingredients), "result", Map.of("id", "trainmod:" + result, "count", count)));
         unlockRecipe(id, ingredients[0]);
     }
 
@@ -775,6 +788,67 @@ public final class TrainAssets {
         write("data/trainmod/loot_table/blocks/" + id + ".json", Map.of("type", "minecraft:block", "pools",
             List.of(Map.of("rolls", 1, "conditions", List.of(Map.of("condition", "minecraft:survives_explosion")),
                 "entries", List.of(Map.of("type", "minecraft:item", "name", drop))))));
+    }
+
+    private void festive() throws IOException {
+        festiveModel("present", FestiveModels.present());
+        write("assets/trainmod/blockstates/present.json", Map.of("variants", Map.of("", ref("present"))));
+        item("present", "block/present");
+        loot("present", "trainmod:present");
+        festiveDecoration("sleigh", FestiveModels.sleigh(), "sleigh");
+        festiveModel("wreath_item", FestiveModels.wreath());
+        festiveDecoration("wreath", FestiveModels.wallWreath(), "wreath_item");
+        festiveDecoration("wreath_crate", FestiveModels.wreathCrate(), "wreath_crate");
+
+        var variants = new LinkedHashMap<String, Object>();
+        for (int part = 0; part < FestiveModels.TREE_HEIGHT; part++) {
+            String model = "christmas_tree_" + part;
+            variants.put("part=" + part, ref(model));
+            festiveModel(model, FestiveModels.treeSection(part));
+        }
+        write("assets/trainmod/blockstates/christmas_tree.json", Map.of("variants", variants));
+        festiveModel("christmas_tree_item", FestiveModels.standingTree().stream()
+            .map(box -> FestiveModels.scale(box, 0.42f, 0, -2, 0)).toList());
+        item("christmas_tree", "block/christmas_tree_item");
+        var base = Map.of("type", "minecraft:match_block",
+            "blocks", "trainmod:christmas_tree", "state", Map.of("part", "0"));
+        festiveLoot("christmas_tree", Map.of("type", "minecraft:all_of",
+            "terms", List.of(base, Map.of("type", "minecraft:survives_explosion"))));
+    }
+
+    private void festiveDecoration(String id, List<VehicleModels.Box> boxes, String itemModel) throws IOException {
+        festiveModel(id, boxes);
+        var states = new LinkedHashMap<String, Object>();
+        var facings = List.of("north", "east", "south", "west");
+        for (int i = 0; i < facings.size(); i++) {
+            states.put("facing=" + facings.get(i), Map.of("model", "trainmod:block/" + id, "y", i * 90));
+        }
+        write("assets/trainmod/blockstates/" + id + ".json", Map.of("variants", states));
+        item(id, "block/" + itemModel);
+        festiveLoot(id, Map.of("type", "minecraft:survives_explosion"));
+    }
+
+    private void festiveLoot(String id, Map<String, ?> condition) throws IOException {
+        write("data/trainmod/loot_table/blocks/" + id + ".json", Map.of("type", "minecraft:block", "pools",
+            List.of(Map.of("rolls", 1, "condition", condition,
+                "entries", List.of(Map.of("type", "minecraft:item", "name", "trainmod:" + id))))));
+    }
+
+    private void festiveModel(String id, List<VehicleModels.Box> boxes) throws IOException {
+        var textures = new LinkedHashMap<String, String>();
+        var elements = new ArrayList<Map<String, Object>>();
+        for (var face : VehicleModels.visibleFaces(boxes)) {
+            var box = face.bounds();
+            String color = Integer.toHexString(box.color());
+            if (paint.add(box.color())) texture("block/paint/" + color, box.color(), 16);
+            textures.put(color, "trainmod:block/paint/" + color);
+            elements.add(Map.of("from", vector(box.x() + 8, box.y(), box.z() + 8),
+                "to", vector(box.x() + 8 + box.width(), box.y() + box.height(), box.z() + 8 + box.length()),
+                "faces", Map.of(face.direction().getName(), Map.of("texture", "#" + color))));
+        }
+        textures.put("particle", textures.values().iterator().next());
+        write("assets/trainmod/models/block/" + id + ".json",
+            Map.of("parent", "minecraft:block/block", "ambientocclusion", false, "textures", textures, "elements", elements));
     }
 
     private void model(String id, Map<String, String> textures, List<Map<String, Object>> boxes) throws IOException {

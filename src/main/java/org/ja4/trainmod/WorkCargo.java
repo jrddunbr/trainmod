@@ -27,12 +27,12 @@ final class WorkCargo {
         return stack.is(item) ? edit(inventory).removeItem(slot, count).getCount() : 0;
     }
 
-    boolean supply(SimpleContainer supplies, int slot, List<SimpleContainer> gondolas, ItemLike ingredient, int count) {
+    boolean supply(SimpleContainer supplies, int slot, List<SimpleContainer> cargo, ItemLike ingredient, int count) {
         Item item = ingredient.asItem();
         count -= take(supplies, slot, item, count);
-        for (var gondola : gondolas) {
-            for (int i = 0; count > 0 && i < gondola.getContainerSize(); i++) {
-                count -= take(gondola, i, item, count);
+        for (var inventory : cargo) {
+            for (int i = 0; count > 0 && i < inventory.getContainerSize(); i++) {
+                count -= take(inventory, i, item, count);
             }
             if (count == 0) break;
         }

@@ -4,6 +4,7 @@ import java.util.EnumMap;
 import java.util.Map;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.syncher.EntityDataSerializer;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.flag.FeatureFlags;
@@ -11,6 +12,7 @@ import net.minecraft.world.inventory.MenuType;
 import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.SoundType;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
@@ -20,6 +22,7 @@ import net.neoforged.neoforge.registries.DeferredBlock;
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredItem;
 import net.neoforged.neoforge.registries.DeferredRegister;
+import net.neoforged.neoforge.registries.NeoForgeRegistries;
 
 @Mod(Trainmod.ID)
 public final class Trainmod {
@@ -33,6 +36,10 @@ public final class Trainmod {
         DeferredRegister.create(Registries.SOUND_EVENT, ID);
     private static final DeferredRegister<CreativeModeTab> TABS = DeferredRegister.create(Registries.CREATIVE_MODE_TAB, ID);
     private static final DeferredRegister<MenuType<?>> MENUS = DeferredRegister.create(Registries.MENU, ID);
+    private static final DeferredRegister<EntityDataSerializer<?>> ENTITY_DATA =
+        DeferredRegister.create(NeoForgeRegistries.Keys.ENTITY_DATA_SERIALIZERS, ID);
+    static final DeferredHolder<EntityDataSerializer<?>, EntityDataSerializer<FreightLoad>> FREIGHT_DATA =
+        ENTITY_DATA.register("freight", () -> EntityDataSerializer.forValueType(FreightLoad.STREAM_CODEC));
 
     static final Map<TrackGeometry.Kind, DeferredBlock<TrackBlock>> TRACK = new EnumMap<>(TrackGeometry.Kind.class);
     static final Map<TrackGeometry.Kind, DeferredItem<TrackItem>> TRACK_ITEMS = new EnumMap<>(TrackGeometry.Kind.class);
@@ -50,6 +57,18 @@ public final class Trainmod {
 
     static final DeferredBlock<RailwayBlocks.Ballast> BALLAST =
         BLOCKS.registerBlock("ballast", RailwayBlocks.Ballast::new, p -> p.strength(0.7f).sound(SoundType.GRAVEL).noOcclusion());
+    static final DeferredBlock<Block> PRESENT =
+        BLOCKS.registerBlock("present", Block::new, p -> p.strength(0.3f).sound(SoundType.WOOL).noOcclusion());
+    static final DeferredBlock<ChristmasTree> CHRISTMAS_TREE =
+        BLOCKS.registerBlock("christmas_tree", ChristmasTree::new, p -> p.strength(0.4f).sound(SoundType.GRASS).noOcclusion()
+            .pushReaction(net.minecraft.world.level.material.PushReaction.POPPED));
+    static final DeferredBlock<HolidayDecoration> SLEIGH = BLOCKS.registerBlock("sleigh",
+        p -> new HolidayDecoration(HolidayDecoration.Kind.SLEIGH, p), p -> p.strength(0.7f).sound(SoundType.WOOD).noOcclusion());
+    static final DeferredBlock<HolidayDecoration> WREATH = BLOCKS.registerBlock("wreath",
+        p -> new HolidayDecoration(HolidayDecoration.Kind.WREATH, p), p -> p.strength(0.25f).sound(SoundType.GRASS).noOcclusion()
+            .noCollision().pushReaction(net.minecraft.world.level.material.PushReaction.POPPED));
+    static final DeferredBlock<HolidayDecoration> WREATH_CRATE = BLOCKS.registerBlock("wreath_crate",
+        p -> new HolidayDecoration(HolidayDecoration.Kind.WREATH_CRATE, p), p -> p.strength(0.6f).sound(SoundType.WOOD).noOcclusion());
     static final DeferredBlock<RailExtruder> RAIL_EXTRUDER = BLOCKS.registerBlock("rail_extruder", RailExtruder::new,
         p -> p.strength(3.5f).sound(SoundType.METAL).requiresCorrectToolForDrops());
     static final DeferredHolder<net.minecraft.world.level.block.entity.BlockEntityType<?>,
@@ -133,6 +152,11 @@ public final class Trainmod {
 
     static {
         ITEMS.registerSimpleBlockItem(BALLAST);
+        ITEMS.registerSimpleBlockItem(PRESENT);
+        ITEMS.registerItem("christmas_tree", p -> new ChristmasTree.Kit(CHRISTMAS_TREE.get(), p.useBlockDescriptionPrefix()));
+        ITEMS.registerSimpleBlockItem(SLEIGH);
+        ITEMS.registerSimpleBlockItem(WREATH);
+        ITEMS.registerSimpleBlockItem(WREATH_CRATE);
         ITEMS.registerSimpleBlockItem(RAIL_EXTRUDER);
         ITEMS.registerItem("wide_steel_girder", p -> new WideGirder.Kit(WIDE_STEEL_GIRDER.get(), p.useBlockDescriptionPrefix()));
         ITEMS.registerSimpleBlockItem(STAND);
@@ -188,6 +212,7 @@ public final class Trainmod {
         ENTITIES.register(bus);
         BLOCK_ENTITIES.register(bus);
         MENUS.register(bus);
+        ENTITY_DATA.register(bus);
         var recipes = DeferredRegister.create(Registries.RECIPE_SERIALIZER, ID);
         recipes.register("diesel", () -> DieselRecipe.SERIALIZER);
         recipes.register("recycle_track", () -> TrackRecyclingRecipe.SERIALIZER);

@@ -262,26 +262,6 @@ final class VehicleModels {
         return model.scaled(kind);
     }
 
-    static List<Box> railCargo(TrainVehicle.Kind kind, int layers) {
-        var model = new VehicleModels();
-        for (int layer = 0; layer < layers; layer++) {
-            float y = 7.025f + layer * 1.26f;
-            for (int z = -15; z <= 15; z += 3) model.box(FLOOR, -11.9f, y, z, 23.8f, 0.36f, 1.25f);
-            for (int x : new int[]{-7, 7}) {
-                model.box(STEEL, x - 0.65f, y + 0.36f, -16.1f, 1.3f, 0.22f, 32.2f);
-                model.box(WHEEL, x - 0.28f, y + 0.58f, -16.1f, 0.56f, 0.40f, 32.2f);
-                model.box(0x9b9d98, x - 0.54f, y + 0.98f, -16.1f, 1.08f, 0.28f, 32.2f);
-            }
-        }
-        float top = layers * 1.26f;
-        for (int z : new int[]{-10, 9}) {
-            model.box(0x655941, -12.15f, 7.025f + top, z, 24.3f, 0.12f, 1.05f);
-            model.box(0x655941, -12.15f, 7.03f, z, 0.26f, top, 1.05f);
-            model.box(0x655941, 11.89f, 7.03f, z, 0.26f, top, 1.05f);
-        }
-        return model.scaled(kind);
-    }
-
     static List<Box> buffer() {
         var model = new VehicleModels();
         for (int side : new int[]{-5, 2}) {

@@ -4,6 +4,7 @@ import java.util.List;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
@@ -1045,6 +1046,114 @@ final class RailwayAdditionsGameTest {
             .thenSucceed();
     }
 
+    static void workTrainCargoSorting(GameTestHelper test) {
+        var level = test.getLevel();
+        BlockPos track = isolatedTrack(test, 226);
+        RailwayGameTests.piece(level, track, TrackGeometry.Kind.STRAIGHT_12, 0, true);
+        RailwayGameTests.piece(level, track.east(5), TrackGeometry.Kind.STRAIGHT_12, 0, true);
+        var regulator = RailwayGameTests.vehicle(level, TrainVehicle.Kind.BALLAST_CAR, track.south(9));
+        var flatcar = RailwayGameTests.vehicle(level, TrainVehicle.Kind.FLATCAR, track.south(6));
+        var gondola = RailwayGameTests.vehicle(level, TrainVehicle.Kind.GONDOLA, track.south(3));
+        var siding = RailwayGameTests.vehicle(level, TrainVehicle.Kind.GONDOLA, track.offset(5, 0, 5));
+        var player = test.makeMockServerPlayerInLevel();
+        var customName = net.minecraft.core.component.DataComponents.CUSTOM_NAME;
+        var label = Component.literal("Reserved bolts");
+        var bolts = new ItemStack(Items.IRON_NUGGET, 4);
+        bolts.set(customName, label);
+        regulator.cargo.setItem(4, bolts);
+        flatcar.cargo.setItem(2, bolts.copyWithCount(6));
+        flatcar.cargo.setItem(5, new ItemStack(Items.IRON_NUGGET, 2));
+        flatcar.cargo.setItem(6, new ItemStack(Items.GRAVEL, 18));
+        gondola.cargo.setItem(4, new ItemStack(Items.GRAVEL, 12));
+        gondola.cargo.setItem(5, new ItemStack(Trainmod.RAIL.get(), 9));
+        siding.cargo.setItem(4, new ItemStack(Items.GRAVEL, 27));
+        test.startSequence()
+            .thenExecute(() -> {
+                couple(player, regulator, -1, flatcar, 1);
+                test.assertTrue(regulator.coupledId(1) == flatcar.getId(), "The first freight car is coupled");
+            })
+            .thenExecuteAfter(22, () -> {
+                test.assertTrue(flatcar.cargo.getItem(6).getCount() == 18 && regulator.cargo.getItem(4).getCount() == 4,
+                    "With all work cars off, cargo stays where it was loaded");
+                regulator.toggleBallastWork(player);
+            })
+            .thenExecuteAfter(22, () -> {
+                test.assertTrue(regulator.cargo.countItem(Items.GRAVEL) == 18 && regulator.cargo.countItem(Items.IRON_NUGGET) == 0
+                    && flatcar.cargo.countItem(Items.IRON_NUGGET) == 12 && flatcar.cargo.getItems().stream()
+                        .anyMatch(stack -> stack.is(Items.IRON_NUGGET) && stack.getCount() == 10 && label.equals(stack.get(customName))),
+                    "The regulator takes gravel and matching named stacks merge separately from unmarked items");
+                test.assertTrue(gondola.cargo.getItem(4).getCount() == 12 && siding.cargo.getItem(4).getCount() == 27,
+                    "Nearby uncoupled stock keeps its cargo");
+                couple(player, flatcar, -1, gondola, 1);
+                test.assertTrue(flatcar.coupledId(1) == gondola.getId(), "The gondola joins the running sort");
+            })
+            .thenExecuteAfter(22, () -> {
+                test.assertTrue(regulator.cargo.countItem(Items.GRAVEL) == 30 && flatcar.cargo.countItem(Trainmod.RAIL.get()) == 9,
+                    "Newly coupled cars contribute to the regulator's supplies and the track load");
+                player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Trainmod.COUPLER.get()));
+                player.setPos(flatcar.position().add(1, 0, 0));
+                flatcar.interact(player, InteractionHand.MAIN_HAND, flatcar.couplerOffset(1, flatcar.getYRot(), 0, 0));
+                test.assertTrue(flatcar.coupledId(1) != gondola.getId(), "The gondola is detached");
+                gondola.cargo.setItem(10, new ItemStack(Items.GRAVEL, 5));
+            })
+            .thenExecuteAfter(22, () -> {
+                test.assertTrue(gondola.cargo.getItem(10).getCount() == 5 && regulator.cargo.countItem(Items.GRAVEL) == 30
+                    && siding.cargo.getItem(4).getCount() == 27, "Detached and unrelated stock is outside the running sort");
+                for (var car : List.of(regulator, flatcar, gondola, siding)) car.discard();
+                level.getServer().getPlayerList().remove(player);
+            })
+            .thenSucceed();
+    }
+
+    static void workTrainBallastSharing(GameTestHelper test) {
+        var level = test.getLevel();
+        BlockPos track = isolatedTrack(test, 234);
+        RailwayGameTests.piece(level, track, TrackGeometry.Kind.STRAIGHT_12, 0, true);
+        var first = RailwayGameTests.vehicle(level, TrainVehicle.Kind.BALLAST_CAR, track.south(9));
+        var freight = RailwayGameTests.vehicle(level, TrainVehicle.Kind.FLATCAR, track.south(6));
+        var second = RailwayGameTests.vehicle(level, TrainVehicle.Kind.BALLAST_CAR, track.south(3));
+        var player = test.makeMockServerPlayerInLevel();
+        var ballast = Trainmod.BALLAST.get().asItem();
+        first.cargo.setItem(0, new ItemStack(Items.GRAVEL, 7));
+        freight.cargo.setItem(0, new ItemStack(Items.GRAVEL, 8));
+        freight.cargo.setItem(1, new ItemStack(ballast, 10));
+
+        test.startSequence()
+            .thenExecute(() -> {
+                couple(player, first, -1, freight, 1);
+                couple(player, freight, -1, second, 1);
+                test.assertTrue(first.loadedTrain(level).size() == 3, "Both ballast regulators are coupled through the flatcar");
+                first.toggleBallastWork(player);
+            })
+            .thenExecuteAfter(22, () -> {
+                test.assertTrue(ballastCount(first) == 13 && ballastCount(second) == 12 && freight.cargo.isEmpty(),
+                    "Both regulators share the combined supply, and the running car gets the odd block");
+                test.assertTrue(first.cargo.countItem(Items.GRAVEL) + second.cargo.countItem(Items.GRAVEL) == 15
+                    && first.cargo.countItem(ballast) + second.cargo.countItem(ballast) == 10, "Sorting preserves both item types");
+                freight.cargo.setItem(0, new ItemStack(Items.GRAVEL, 5));
+            })
+            .thenExecuteAfter(22, () -> {
+                test.assertTrue(ballastCount(first) == 15 && ballastCount(second) == 15 && freight.cargo.isEmpty(),
+                    "The next sort rebalances ballast added to the train");
+                for (int slot = 0; slot < first.cargo.getContainerSize(); slot++) {
+                    first.cargo.setItem(slot, new ItemStack(Items.GRAVEL, 64));
+                    second.cargo.setItem(slot, new ItemStack(ballast, 64));
+                }
+                freight.cargo.setItem(0, new ItemStack(ballast, 32));
+            })
+            .thenExecuteAfter(22, () -> {
+                test.assertTrue(ballastCount(first) == 27 * 64 && ballastCount(second) == 27 * 64
+                    && ballastCount(freight) == 32, "Full stacks fill both regulators and leave the surplus in freight");
+                for (var car : List.of(first, freight, second)) car.discard();
+                level.getServer().getPlayerList().remove(player);
+            })
+            .thenSucceed();
+    }
+
+    private static int ballastCount(TrainVehicle car) {
+        return car.cargo.getItems().stream().filter(TrainVehicle::ballastSupply).mapToInt(ItemStack::getCount).sum();
+    }
+
     static void boreWorkTrain(GameTestHelper test) {
         var level = test.getLevel();
         BlockPos end = isolatedTrack(test, 72).south(10);
@@ -1068,15 +1177,20 @@ final class RailwayAdditionsGameTest {
 
         var bore = RailwayGameTests.vehicle(level, TrainVehicle.Kind.TUNNEL_BORE, end.north(2));
         var gondola = RailwayGameTests.vehicle(level, TrainVehicle.Kind.GONDOLA, end.north(6));
+        var flatcar = RailwayGameTests.vehicle(level, TrainVehicle.Kind.FLATCAR, end.north(9));
         var driver = test.makeMockServerPlayerInLevel();
         try {
             GameType.SURVIVAL.updatePlayerAbilities(driver.getAbilities());
             couple(driver, bore, -1, gondola, 1);
             test.assertTrue(bore.coupledId(1) == gondola.getId(), "The gondola is the bore's trailing supply car");
+            couple(driver, gondola, -1, flatcar, 1);
+            test.assertTrue(gondola.coupledId(1) == flatcar.getId(), "The sorted track supplies can ride in a coupled flatcar");
             bore.supplies.setItem(TrainVehicle.RAIL_SUPPLY, new ItemStack(Trainmod.RAIL.get(), 1));
-            gondola.cargo.setItem(0, new ItemStack(Trainmod.RAIL.get(), 11));
-            gondola.cargo.setItem(1, new ItemStack(Trainmod.TIE_BUNDLE.get(), 4));
-            gondola.cargo.setItem(2, new ItemStack(Items.COBBLESTONE));
+            gondola.cargo.setItem(0, new ItemStack(Trainmod.RAIL.get(), 5));
+            gondola.cargo.setItem(1, new ItemStack(Trainmod.TIE_BUNDLE.get(), 2));
+            flatcar.cargo.setItem(0, new ItemStack(Trainmod.RAIL.get(), 6));
+            flatcar.cargo.setItem(1, new ItemStack(Trainmod.TIE_BUNDLE.get(), 2));
+            flatcar.cargo.setItem(2, new ItemStack(Items.COBBLESTONE));
             driver.setPos(bore.position());
             test.assertTrue(driver.startRiding(bore), "The driver boards the bore");
             for (int tick = 0; tick < 75; tick++) {
@@ -1094,8 +1208,8 @@ final class RailwayAdditionsGameTest {
                 "The bore fills an unsupported center and retains a sturdy grass foundation");
             test.assertTrue(bore.supplies.isEmpty() && gondola.cargo.countItem(Trainmod.RAIL.get()) == 0
                 && gondola.cargo.countItem(Trainmod.TIE_BUNDLE.get()) == 0
-                && gondola.cargo.countItem(Items.COBBLESTONE) == 0,
-                "Four sections spend twelve rails, four tie bundles, and one cobblestone across both inventories");
+                && gondola.cargo.countItem(Items.COBBLESTONE) == 0 && flatcar.cargo.isEmpty(),
+                "Four sections spend twelve rails, four tie bundles, and one cobblestone across the three cars");
             test.assertTrue(gondola.cargo.countItem(Items.OAK_LOG) == 8 && level.getBlockState(branch).isAir(),
                 "The excavation follows logs above and diagonally beyond its face");
             test.assertTrue(pig.isAlive() && Math.abs(pig.getX() - bore.getX()) > 1,
@@ -1104,6 +1218,7 @@ final class RailwayAdditionsGameTest {
             driver.stopRiding();
             bore.discard();
             gondola.discard();
+            flatcar.discard();
             pig.discard();
             level.getServer().getPlayerList().remove(driver);
         }

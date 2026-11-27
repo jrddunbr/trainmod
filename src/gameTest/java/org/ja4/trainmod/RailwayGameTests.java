@@ -14,6 +14,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.SimpleContainer;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.item.Items;
@@ -22,6 +23,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.RailBlock;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.RailShape;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -49,6 +51,8 @@ final class RailwayGameTests {
         new Case("scissor_stands", RailwayGameTests::scissorStands),
         new Case("long_scissor_stands", test -> scissorStands(test, TrackGeometry.Kind.SCISSORS_LONG)),
         new Case("visible_freight_and_doors", RailwayGameTests::visibleFreightAndDoors),
+        new Case("festive_decorations_and_freight", RailwayGameTests::festiveDecorationsAndFreight),
+        new Case("bulk_and_crated_freight", RailwayGameTests::bulkAndCratedFreight),
         new Case("placement_previews", RailwayGameTests::placementPreviews),
         new Case("freight_riders_and_brakes", RailwayGameTests::freightRidersAndBrakes),
         new Case("bore_drives_and_lays_rail", RailwayGameTests::boreDrivesAndLaysRail),
@@ -70,6 +74,8 @@ final class RailwayGameTests {
         new Case("electric_reserve", RailwayAdditionsGameTest::electricReserve),
         new Case("catenary_routes", RailwayAdditionsGameTest::catenaryRoutes),
         new Case("regulator_cargo", RailwayAdditionsGameTest::regulatorCargo),
+        new Case("work_train_cargo_sorting", RailwayAdditionsGameTest::workTrainCargoSorting),
+        new Case("work_train_ballast_sharing", RailwayAdditionsGameTest::workTrainBallastSharing),
         new Case("track_wear", RailwayAdditionsGameTest::trackWear),
         new Case("regulator_walls", RailwayAdditionsGameTest::regulatorWalls),
         new Case("regulator_rechecks_slopes", RailwayAdditionsGameTest::regulatorRechecksSlopes),
@@ -777,6 +783,151 @@ final class RailwayGameTests {
         test.succeed();
     }
 
+    private static void festiveDecorationsAndFreight(GameTestHelper test) {
+        var level = test.getLevel();
+        BlockPos base = test.absolutePos(new BlockPos(0, 150, 0));
+        level.setBlockAndUpdate(base.below(), Blocks.STONE.defaultBlockState());
+        var tree = Trainmod.CHRISTMAS_TREE.get().asItem();
+        var present = Trainmod.PRESENT.get().asItem();
+        var player = test.makeMockServerPlayerInLevel();
+        try {
+            player.gameMode.changeGameModeForPlayer(GameType.SURVIVAL);
+            player.setPos(Vec3.atBottomCenterOf(base.east(3)));
+            var trees = new ItemStack(tree, 2);
+            player.setItemInHand(InteractionHand.MAIN_HAND, trees);
+            level.setBlockAndUpdate(base.above(2), Blocks.STONE.defaultBlockState());
+            test.assertTrue(!tree.useOn(useAt(player, base.below(), 0.5, 1, 0.5)).consumesAction()
+                && level.getBlockState(base).isAir() && level.getBlockState(base.above()).isAir() && trees.getCount() == 2,
+                "An obstructed tree cannot be placed or consume the item");
+            level.removeBlock(base.above(2), false);
+            test.assertTrue(tree.useOn(useAt(player, base.below(), 0.5, 1, 0.5)).consumesAction() && trees.getCount() == 1,
+                "Placing the tree consumes one item");
+            for (int part = 0; part < FestiveModels.TREE_HEIGHT; part++) {
+                BlockPos section = base.above(part);
+                var state = level.getBlockState(section);
+                test.assertTrue(state.is(Trainmod.CHRISTMAS_TREE.get()) && state.getValue(ChristmasTree.PART) == part,
+                    "The tree places each of its three sections");
+                var loot = Block.getDrops(state, level, section, null);
+                test.assertTrue(part == 0 ? loot.size() == 1 && loot.getFirst().is(tree) : loot.isEmpty(),
+                    "The loot table assigns the tree item to the base section only");
+            }
+            player.gameMode.destroyBlock(base.above(2));
+            test.assertTrue(level.getBlockState(base).isAir() && level.getBlockState(base.above()).isAir()
+                && level.getBlockState(base.above(2)).isAir(), "Breaking the top removes the whole tree");
+            AABB clearing = new AABB(base).expandTowards(0, 2, 0).inflate(1);
+            var drops = level.getEntitiesOfClass(ItemEntity.class, clearing, drop -> drop.getItem().is(tree));
+            int dropped = drops.stream().mapToInt(drop -> drop.getItem().getCount()).sum();
+            test.assertTrue(dropped == 1, "Breaking the top returns one tree item, found " + dropped);
+            player.gameMode.changeGameModeForPlayer(GameType.CREATIVE);
+            tree.useOn(useAt(player, base.below(), 0.5, 1, 0.5));
+            player.gameMode.destroyBlock(base.above());
+            test.assertTrue(level.getBlockState(base).isAir() && level.getBlockState(base.above(2)).isAir()
+                && level.getEntitiesOfClass(ItemEntity.class, clearing, drop -> drop.getItem().is(tree)).equals(drops),
+                "Breaking a tree in Creative leaves no extra drops");
+            player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(present));
+            test.assertTrue(present.useOn(useAt(player, base.below(), 0.5, 1, 0.5)).consumesAction()
+                && level.getBlockState(base).is(Trainmod.PRESENT.get()), "Presents can also be placed on the ground");
+
+            BlockPos track = base.south(4);
+            piece(level, track, TrackGeometry.Kind.STRAIGHT_12, 0, true);
+            var flat = vehicle(level, TrainVehicle.Kind.FLATCAR, track.south(2));
+            var gondola = vehicle(level, TrainVehicle.Kind.GONDOLA, track.south(6));
+            for (var car : List.of(flat, gondola)) {
+                for (int count = 1; count <= 3; count++) {
+                    car.cargo.setItem(0, new ItemStack(present, count));
+                    test.assertTrue(car.freightLoad().presents() == count, "The visible presents match the item count");
+                }
+                car.cargo.setItem(1, new ItemStack(present, 2));
+                car.cargo.setItem(2, new ItemStack(tree));
+                test.assertTrue(car.freightLoad().presents() == 3 && car.freightLoad().tree(), "Both kinds of cargo show together");
+                car.cargo.removeItem(0, 3);
+                test.assertTrue(car.freightLoad().presents() == 2, "Visible cargo follows inventory changes across slots");
+                car.cargo.clearContent();
+                test.assertTrue(car.freightLoad().equals(FreightLoad.EMPTY), "Unloading removes the display");
+            }
+            player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Trainmod.SLEIGH.get().asItem()));
+            BlockPos decoration = base.east();
+            level.setBlockAndUpdate(decoration.below(), Blocks.STONE.defaultBlockState());
+            test.assertTrue(player.getMainHandItem().getItem().useOn(useAt(player, decoration.below(), 0.5, 1, 0.5)).consumesAction()
+                && level.getBlockState(decoration).is(Trainmod.SLEIGH.get()), "A sleigh can be placed on the ground");
+
+            BlockPos wall = base.west().above();
+            level.setBlockAndUpdate(wall, Blocks.STONE.defaultBlockState());
+            var wreath = Trainmod.WREATH.get().asItem();
+            player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(wreath));
+            var hit = new net.minecraft.world.phys.BlockHitResult(Vec3.atCenterOf(wall).add(0.5, 0, 0), Direction.EAST, wall, false);
+            test.assertTrue(wreath.useOn(new net.minecraft.world.item.context.UseOnContext(player, InteractionHand.MAIN_HAND, hit)).consumesAction()
+                && level.getBlockState(wall.east()).getValue(HolidayDecoration.FACING) == Direction.EAST,
+                "A wreath hangs outward on a wall");
+            level.removeBlock(wall, false);
+            test.assertTrue(level.getBlockState(wall.east()).isAir(), "A wreath comes off when its wall is removed");
+        } finally {
+            level.getServer().getPlayerList().remove(player);
+        }
+        test.succeed();
+    }
+
+    private static void bulkAndCratedFreight(GameTestHelper test) {
+        var level = test.getLevel();
+        BlockPos track = test.absolutePos(new BlockPos(0, 158, 0));
+        piece(level, track, TrackGeometry.Kind.STRAIGHT_12, 0, true);
+        var flatcar = vehicle(level, TrainVehicle.Kind.FLATCAR, track.south(2));
+        var gondola = vehicle(level, TrainVehicle.Kind.GONDOLA, track.south(6));
+        for (var car : List.of(flatcar, gondola)) {
+            car.cargo.setItem(0, new ItemStack(Items.IRON_INGOT, 20));
+            car.cargo.setItem(1, new ItemStack(Items.WHEAT_SEEDS, 32));
+            car.cargo.setItem(2, new ItemStack(Items.IRON_INGOT, 20));
+            car.cargo.setItem(3, new ItemStack(Items.PAPER, 4));
+            car.cargo.setItem(4, new ItemStack(Items.BRICK, 3));
+            test.assertTrue(car.freightLoad().crateCount() == 3 && car.freightLoad().crateItems().equals(List.of(
+                Identifier.withDefaultNamespace("iron_ingot"), Identifier.withDefaultNamespace("wheat_seeds"),
+                Identifier.withDefaultNamespace("paper"))), "Crates display the three most numerous item types across slots");
+            car.cargo.clearContent();
+            car.cargo.setItem(0, new ItemStack(Trainmod.SLEIGH.get().asItem()));
+            car.cargo.setItem(1, new ItemStack(Trainmod.WREATH.get().asItem(), 4));
+            car.cargo.setItem(2, new ItemStack(Trainmod.WREATH_CRATE.get().asItem()));
+            car.cargo.setItem(3, new ItemStack(Trainmod.PRESENT.get().asItem(), 2));
+            var festive = car.freightLoad();
+            test.assertTrue(festive.sleigh() && festive.wreathCrates() == 2 && festive.presents() == 2,
+                "Sleighs, packed and loose wreaths, and presents can ride in the same car");
+            car.cargo.clearContent();
+        }
+        for (int slot = 0; slot < 9; slot++) gondola.cargo.setItem(slot, new ItemStack(Items.COBBLESTONE, 64));
+        gondola.cargo.setItem(9, new ItemStack(Items.DIRT, 64));
+        test.assertTrue(gondola.freightLoad().bulk() == FreightLoad.Bulk.COBBLESTONE && gondola.freightLoad().fillPercent() == 34,
+            "Predominant cobblestone fills the gondola by its occupied volume");
+        for (int slot = 0; slot < 27; slot++) gondola.cargo.setItem(slot, new ItemStack(Items.DIRT, 64));
+        test.assertTrue(gondola.freightLoad().bulk() == FreightLoad.Bulk.DIRT && gondola.freightLoad().fillPercent() == 100,
+            "Replacing the cobblestone with dirt updates the texture and fill level");
+        gondola.cargo.clearContent();
+        flatcar.cargo.setItem(0, new ItemStack(Items.DIRT, 64));
+        test.assertTrue(flatcar.freightLoad().bulk() == FreightLoad.Bulk.NONE && flatcar.freightLoad().crateCount() == 1,
+            "Flatcars carry dirt in crates");
+
+        for (int slot = 0; slot < 12; slot++) gondola.cargo.setItem(slot, new ItemStack(Items.OAK_LOG, 64));
+        for (int slot = 12; slot < 18; slot++) gondola.cargo.setItem(slot, new ItemStack(Items.SPRUCE_LOG, 64));
+        for (int slot = 18; slot < 21; slot++) gondola.cargo.setItem(slot, new ItemStack(Items.BIRCH_LOG, 64));
+        gondola.cargo.setItem(21, new ItemStack(Items.STRIPPED_BIRCH_WOOD, 32));
+        var lumber = gondola.freightLoad();
+        test.assertTrue(lumber.timber().size() == 3 && lumber.timber().get(0).count() == 7
+            && lumber.timber().get(1).count() == 3 && lumber.timber().get(2).count() == 2,
+            "Log bundles show three species in proportion to their quantities and group stripped wood with its species");
+        var payload = io.netty.buffer.Unpooled.buffer();
+        try {
+            FreightLoad.STREAM_CODEC.encode(payload, lumber);
+            test.assertTrue(FreightLoad.STREAM_CODEC.decode(payload).equals(lumber) && !payload.isReadable(),
+                "The mixed timber descriptor round-trips for clients");
+        } finally {
+            payload.release();
+        }
+        gondola.cargo.setItem(22, new ItemStack(Items.CHERRY_LOG, 64));
+        test.assertTrue(gondola.freightLoad().timber().isEmpty() && gondola.freightLoad().crateCount() > 0,
+            "A fourth wood type switches the mixed load to crates");
+        gondola.cargo.clearContent();
+        test.assertTrue(gondola.freightLoad().equals(FreightLoad.EMPTY), "Unloading clears the synchronized freight display");
+        test.succeed();
+    }
+
     private static void visibleFreightAndDoors(GameTestHelper test) {
         var level = test.getLevel();
         BlockPos root = test.absolutePos(new BlockPos(0, 272, 0));
@@ -786,13 +937,17 @@ final class RailwayGameTests {
         var boxcar = vehicle(level, TrainVehicle.Kind.BOXCAR, root.south(9));
         for (var car : List.of(flat, gondola)) {
             car.cargo.setItem(0, new ItemStack(Items.RAIL, 1));
-            test.assertTrue(car.railLayers() == 1, "A small rail load shows one set");
+            test.assertTrue(car.freightLoad().track().rails() == 1, "A small rail load shows one piece");
             var kit = Trainmod.TRACK_ITEMS.get(TrackGeometry.Kind.STRAIGHT_3).get();
             for (int slot = 0; slot < 26; slot++) car.cargo.setItem(slot, new ItemStack(kit, new ItemStack(kit).getMaxStackSize()));
-            test.assertTrue(car.railLayers() == 4, "A near-full rail load shows four stacked sets");
+            test.assertTrue(car.freightLoad().track().rails() == 12, "A near-full rail load grows to several strapped layers");
             car.cargo.setItem(26, new ItemStack(Items.GRAVEL, 64));
-            test.assertTrue(car.railLayers() == 0 && (car.gravelFill() > 0) == (car == gondola),
-                "Mixed cargo hides the rail stack, with a gravel surface in the gondola");
+            test.assertTrue(car.freightLoad().track().rails() == 12, "The rail display remains visible with a minority of gravel");
+            for (int slot = 0; slot < 18; slot++) car.cargo.setItem(slot, new ItemStack(Trainmod.RAIL.get(), 64));
+            for (int slot = 18; slot < 24; slot++) car.cargo.setItem(slot, new ItemStack(Trainmod.TIE_BUNDLE.get(), 64));
+            for (int slot = 24; slot < 27; slot++) car.cargo.setItem(slot, new ItemStack(Items.DIRT, 64));
+            test.assertTrue(car.freightLoad().track().equals(new FreightLoad.Track(8, 3)),
+                "Rail stock and tie bundles are displayed in proportion when track materials form the majority");
         }
         for (int slot = 0; slot < 27; slot++) gondola.cargo.setItem(slot, new ItemStack(Items.GRAVEL, 64));
         test.assertTrue(gondola.gravelFill() == 1, "A full gondola renders a full gravel load");

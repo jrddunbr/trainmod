@@ -86,7 +86,9 @@ final class TrainVehicle extends VehicleEntity {
 
         boolean passengerCar() { return this == GONDOLA || this == BOXCAR; }
 
-        boolean showsLoad() { return this == FLATCAR || this == GONDOLA || this == BALLAST_CAR; }
+        boolean showsLoad() { return showsFreight() || this == BALLAST_CAR; }
+
+        boolean showsFreight() { return this == FLATCAR || this == GONDOLA; }
 
         boolean freight() { return this == FLATCAR || this == GONDOLA || this == BOXCAR; }
     }
@@ -135,9 +137,12 @@ final class TrainVehicle extends VehicleEntity {
     private static final net.minecraft.network.syncher.EntityDataAccessor<Integer> REAR_COUPLED =
         net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
             net.minecraft.network.syncher.EntityDataSerializers.INT);
-    private static final net.minecraft.network.syncher.EntityDataAccessor<Integer> CARGO_LOAD =
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Integer> BALLAST_FILL =
         net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
             net.minecraft.network.syncher.EntityDataSerializers.INT);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<FreightLoad> FREIGHT =
+        net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
+            Trainmod.FREIGHT_DATA.get());
     private static final net.minecraft.network.syncher.EntityDataAccessor<Integer> DOORS =
         net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
             net.minecraft.network.syncher.EntityDataSerializers.INT);
@@ -174,7 +179,8 @@ final class TrainVehicle extends VehicleEntity {
         builder.define(REAR_SEAT, -1);
         builder.define(FRONT_COUPLED, -1);
         builder.define(REAR_COUPLED, -1);
-        builder.define(CARGO_LOAD, 0);
+        builder.define(BALLAST_FILL, 0);
+        builder.define(FREIGHT, FreightLoad.EMPTY);
         builder.define(DOORS, 0);
         builder.define(HANDBRAKE, false);
         builder.define(TREECUTTERS_LANTERN, false);
@@ -264,9 +270,13 @@ final class TrainVehicle extends VehicleEntity {
         entityData.set(AUDIO, (byte) ((horn ? TrainControls.HORN : 0) | (bell ? TrainControls.BELL : 0)));
     }
 
-    int railLayers() { return Math.max(0, entityData.get(CARGO_LOAD)); }
+    float gravelFill() {
+        if (kind == Kind.BALLAST_CAR) return entityData.get(BALLAST_FILL) / 100f;
+        FreightLoad freight = freightLoad();
+        return freight.bulk() == FreightLoad.Bulk.GRAVEL ? freight.fillPercent() / 100f : 0;
+    }
 
-    float gravelFill() { return Math.max(0, -entityData.get(CARGO_LOAD)) / 100f; }
+    FreightLoad freightLoad() { return entityData.get(FREIGHT); }
 
     boolean doorOpen(boolean left) { return (entityData.get(DOORS) & (left ? 1 : 2)) != 0; }
 
@@ -305,26 +315,13 @@ final class TrainVehicle extends VehicleEntity {
     }
 
     private void syncCargo() {
-        double rails = 0;
-        double gravel = 0;
-        boolean railsOnly = true;
-        for (int slot = 0; slot < cargo.getContainerSize(); slot++) {
-            ItemStack stack = cargo.getItem(slot);
-            if (stack.isEmpty()) continue;
-            double units = stack.getCount() / (double) stack.getMaxStackSize();
-            if (kind != Kind.BALLAST_CAR && (stack.getItem() instanceof TrackItem
-                || stack.getItem() instanceof net.minecraft.world.item.BlockItem item
-                && item.getBlock() instanceof net.minecraft.world.level.block.BaseRailBlock)) {
-                rails += units;
-            } else {
-                railsOnly = false;
-                if (ballastSupply(stack)) gravel += units;
-            }
+        if (kind.showsFreight()) {
+            entityData.set(FREIGHT, FreightLoad.from(cargo, kind == Kind.GONDOLA));
+        } else if (kind == Kind.BALLAST_CAR) {
+            double gravel = cargo.getItems().stream().filter(TrainVehicle::ballastSupply)
+                .mapToDouble(stack -> stack.getCount() / (double) stack.getMaxStackSize()).sum();
+            entityData.set(BALLAST_FILL, Math.min(100, (int) Math.ceil(gravel * 100 / cargo.getContainerSize())));
         }
-        int load = railsOnly && rails > 0 ? Math.clamp((int) Math.ceil(rails * 4 / cargo.getContainerSize()), 1, 4)
-            : (kind == Kind.GONDOLA || kind == Kind.BALLAST_CAR) && gravel > 0 ? -Math.clamp((int) Math.ceil(gravel * 100 / cargo.getContainerSize()), 1, 100)
-            : 0;
-        entityData.set(CARGO_LOAD, load);
     }
 
     private SimpleContainer inventory(int size) {
@@ -622,6 +619,7 @@ final class TrainVehicle extends VehicleEntity {
             }
             if (treecuttersActive()) tickTreecutters(level);
             if (kind == Kind.BALLAST_CAR && working && ((tickCount + getId()) & 3) == 0) recheckBallast(level);
+            if (sortsCargo() && Math.floorMod(level.getGameTime() + getId(), 20) == 0) sortTrainCargo(level);
         }
         if (speed == 0 && railRoot != null && (tickCount & 7) == 0) {
             var rail = cursor();
@@ -635,6 +633,17 @@ final class TrainVehicle extends VehicleEntity {
         Engineer engineer = train == null ? null : selectEngineer(level, train);
         var actor = engineer == null ? net.neoforged.neoforge.common.util.FakePlayerFactory.getMinecraft(level) : engineer.rider;
         treecuttersCrew.tick(level, this, actor);
+    }
+
+    private boolean sortsCargo() {
+        return isAlive() && (treecuttersActive() || working && (kind == Kind.TUNNEL_BORE || kind == Kind.BALLAST_CAR));
+    }
+
+    private void sortTrainCargo(ServerLevel level) {
+        var train = loadedTrain(level).stream().filter(TrainVehicle::isAlive).distinct().toList();
+        if (train.stream().noneMatch(car -> car.sortsCargo() && car.getUUID().compareTo(getUUID()) < 0)) {
+            TrainCargoSorter.sort(train);
+        }
     }
 
     @Override
@@ -1398,6 +1407,24 @@ final class TrainVehicle extends VehicleEntity {
         inventories.add(cargo);
         inventories.addAll(connectedGondolaCargo(level));
         return inventories;
+    }
+
+    List<SimpleContainer> boreSupplyCargo(ServerLevel level, List<SimpleContainer> trailing) {
+        if (!working) return trailing;
+        var inventories = new LinkedHashSet<>(trailing);
+        var train = loadedTrain(level);
+        for (var car : train) {
+            if (car.isAlive() && car.kind.freight()) inventories.add(car.cargo);
+        }
+        inventories.add(cargo);
+        inventories.add(overflow);
+        for (var car : train) {
+            if (car != this && car.isAlive() && car.kind == Kind.TUNNEL_BORE) {
+                inventories.add(car.cargo);
+                inventories.add(car.overflow);
+            }
+        }
+        return List.copyOf(inventories);
     }
 
     List<SimpleContainer> connectedGondolaCargo(ServerLevel level) {
