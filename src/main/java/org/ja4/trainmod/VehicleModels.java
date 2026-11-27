@@ -5,6 +5,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import net.minecraft.core.Direction;
+import net.minecraft.world.phys.Vec3;
 
 /** Cuboids in sixteenths of a block, with the deck centered over the rail. */
 final class VehicleModels {
@@ -18,8 +19,11 @@ final class VehicleModels {
     static final float OPEN_DOOR_SHIFT = 11.9f;
     private static final float DECK_TOP = 7;
     static final float DECK_HEIGHT = (DECK_TOP + 0.02f) / 16;
+    static final double CRAFTING_TABLE_SIZE = 0.5;
+    static final Vec3 CRAFTING_TABLE_CORNER = new Vec3(-CRAFTING_TABLE_SIZE / 2, DECK_HEIGHT, -0.82);
     static final float GONDOLA_FLOOR_HALF_WIDTH = 13.75f;
     static final float GONDOLA_FLOOR_HALF_LENGTH = 17;
+    static final int LANTERN_GLOW = 0xffad40;
     enum Panel {
         FLAT_SILL, GONDOLA_WALL, BOXCAR_WALL, BOXCAR_DOOR, DECK, DIESEL_VENTS, TENDER_COAL, TENDER_SIDE;
 
@@ -183,6 +187,7 @@ final class VehicleModels {
         for (var part : brakeWheel(kind)) {
             posed.add(offset(part, (float) (16 * kind.brakeWheelOffset()), kind.brakeWheelHeight(), 0));
         }
+        if (kind == TrainVehicle.Kind.TREECUTTERS_PASSENGER_CAR) posed.addAll(treecuttersLantern(kind, false));
         return posed;
     }
 
@@ -207,7 +212,8 @@ final class VehicleModels {
 
     private static VehicleModels body(TrainVehicle.Kind kind) {
         VehicleModels model = new VehicleModels();
-        model.underframe(kind.freight() || kind == TrainVehicle.Kind.BALLAST_CAR,
+        model.underframe(kind.freight() || kind == TrainVehicle.Kind.BALLAST_CAR
+                || kind == TrainVehicle.Kind.TREECUTTERS_PASSENGER_CAR,
             kind != TrainVehicle.Kind.STEAM_LOCOMOTIVE && kind != TrainVehicle.Kind.TUNNEL_BORE);
         switch (kind) {
             case LOCOMOTIVE -> model.locomotive();
@@ -219,6 +225,7 @@ final class VehicleModels {
             case STEAM_LOCOMOTIVE -> model.steam();
             case TENDER -> model.tender();
             case ELECTRIC_SHUNTER -> model.shunter();
+            case TREECUTTERS_PASSENGER_CAR -> model.treecuttersPassengerCar();
         }
         return model;
     }
@@ -457,6 +464,33 @@ final class VehicleModels {
         }
         box(RIB, -15.5f, 17.5f, -18.5f, 31, 0.8f, 37);
         box(PRR_LIGHT, -10, 18.3f, -18, 20, 0.7f, 36);
+    }
+
+    private void treecuttersPassengerCar() {
+        int paint = 0x46654c;
+        flatDeck(paint);
+        for (int side : new int[]{-1, 1}) {
+            float z = side < 0 ? -17 : 15;
+            box(paint, -14, DECK_TOP, z, 28, 7, 2);
+            box(paint, -14, DECK_TOP + 7, z, 2, 24, 2);
+            box(paint, 12, DECK_TOP + 7, z, 2, 24, 2);
+        }
+        box(0x2c3530, -15.5f, 37, -18, 31, 1.5f, 36);
+        box(0x45544b, -12, 38.5f, -17, 24, 0.7f, 34);
+    }
+
+    static List<Box> treecuttersLantern(TrainVehicle.Kind kind, boolean lit) {
+        var model = new VehicleModels();
+        model.box(STEEL, -0.8f, 34.5f, 10.2f, 1.6f, 2.5f, 1.6f);
+        model.box(STEEL, -3.2f, 33.5f, 7.8f, 6.4f, 1, 6.4f);
+        model.box(lit ? LANTERN_GLOW : 0x6e5240, -2.6f, 29.3f, 8.4f, 5.2f, 4.2f, 5.2f);
+        model.box(STEEL, -3.2f, 28.3f, 7.8f, 6.4f, 1, 6.4f);
+        for (float x : new float[]{-3.1f, 2.4f}) {
+            for (float z : new float[]{7.9f, 13.4f}) {
+                model.box(STEEL, x, 29.3f, z, 0.7f, 4.2f, 0.7f);
+            }
+        }
+        return model.scaled(kind);
     }
 
     private void brakeMount(float y) {

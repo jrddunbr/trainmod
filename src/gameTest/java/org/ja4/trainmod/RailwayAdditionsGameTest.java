@@ -10,6 +10,8 @@ import net.minecraft.sounds.SoundEvents;
 import net.minecraft.util.ProblemReporter;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.SimpleContainer;
+import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.inventory.CraftingMenu;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.context.UseOnContext;
@@ -17,14 +19,17 @@ import net.minecraft.world.item.crafting.CraftingInput;
 import net.minecraft.world.item.crafting.RecipeType;
 import net.minecraft.world.item.crafting.SingleRecipeInput;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.level.storage.TagValueInput;
 import net.minecraft.world.level.storage.TagValueOutput;
 import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.common.NeoForge;
@@ -561,7 +566,7 @@ final class RailwayAdditionsGameTest {
 
     static void regulatorCargo(GameTestHelper test) {
         var level = test.getLevel();
-        BlockPos start = test.absolutePos(new BlockPos(0, 135, 0));
+        BlockPos start = test.absolutePos(new BlockPos(0, 169, 0));
         var substrates = List.of(Blocks.SAND, Blocks.GRAVEL, Blocks.STONE, Blocks.COBBLESTONE, Blocks.DIRT,
             Blocks.GRASS_BLOCK, Blocks.DEEPSLATE);
         for (int i = 0; i < substrates.size(); i++) {
@@ -606,7 +611,10 @@ final class RailwayAdditionsGameTest {
         } finally {
             NeoForge.EVENT_BUS.unregister(recordSound);
         }
-        test.assertTrue(regulator.cargo.isEmpty(), "Each successful replacement spends exactly one gravel or ballast");
+        test.assertTrue(regulator.cargo.countItem(Items.SAND) == 1 && regulator.cargo.countItem(Items.COBBLESTONE) == 2
+            && regulator.cargo.countItem(Items.DIRT) == 2 && regulator.cargo.countItem(Items.COBBLED_DEEPSLATE) == 1,
+            "Successful replacements recover the material from the old foundation");
+        regulator.cargo.clearContent();
         BlockPos slope = start.offset(5, 0, 9);
         BlockPos bridge = slope.south(4);
         RailwayGameTests.straight(level, slope, 0);
@@ -622,7 +630,9 @@ final class RailwayAdditionsGameTest {
         test.assertTrue(regulator.cargo.getItem(0).getCount() == 25 && level.getBlockState(bridge.below(2)).isAir(),
             "Bridge track skips cascading even if it sits on ballast");
         regulator.regulate(level, driver, slope.below());
-        test.assertTrue(regulator.cargo.isEmpty(), "The ballast layer and 24 shoulder blocks each consume one gravel item");
+        test.assertTrue(regulator.cargo.countItem(Items.GRAVEL) == 0 && regulator.cargo.countItem(Items.COBBLESTONE) == 1,
+            "The layer and 24 shoulder blocks each consume one gravel, and the regulator recovers the foundation");
+        regulator.cargo.clearContent();
         for (int depth = 1; depth <= 4; depth++) {
             for (int x = -5; x <= 5; x++) {
                 var state = level.getBlockState(slope.offset(x, -1 - depth, 0));
@@ -644,20 +654,36 @@ final class RailwayAdditionsGameTest {
         test.assertTrue(menu.mode() == TrainVehicle.BallastMode.NARROW && menu.clickMenuButton(driver, BallastRegulatorMenu.CYCLE_MODE)
             && menu.mode() == TrainVehicle.BallastMode.WIDE,
             "The cargo screen toggles the regulator from narrow to wide");
+        level.setBlockAndUpdate(wide.east(), Blocks.WILDFLOWERS.defaultBlockState());
+        level.setBlockAndUpdate(wide.west(), Blocks.LEAF_LITTER.defaultBlockState());
         regulator.cargo.setItem(0, new ItemStack(Items.GRAVEL, 3));
         regulator.regulate(level, driver, wide.below());
-        test.assertTrue(regulator.cargo.isEmpty() && level.getBlockState(wide.below()).is(Trainmod.BALLAST.get())
+        test.assertTrue(regulator.cargo.countItem(Items.GRAVEL) == 0 && regulator.cargo.countItem(Items.DIRT) == 3
+            && level.getBlockState(wide.below()).is(Trainmod.BALLAST.get())
             && level.getBlockState(wide.below().east()).is(Trainmod.BALLAST.get())
-            && level.getBlockState(wide.below().west()).is(Trainmod.BALLAST.get()),
-            "Wide replaces both supported shoulders beside open air and pays only for the three crest blocks");
+            && level.getBlockState(wide.below().west()).is(Trainmod.BALLAST.get())
+            && level.getBlockState(wide.east()).isAir() && level.getBlockState(wide.west()).isAir()
+            && regulator.cargo.countItem(Items.WILDFLOWERS) == 1 && regulator.cargo.countItem(Items.LEAF_LITTER) == 1,
+            "Wide clears and recovers ground cover from both shoulders while paying only for the three crest blocks");
+        regulator.cargo.clearContent();
         BlockPos wideSlope = wide.south(18);
         RailwayGameTests.straight(level, wideSlope, 0);
         for (int side = -6; side <= 6; side++) {
             level.setBlockAndUpdate(wideSlope.below(6).east(side), Blocks.STONE.defaultBlockState());
         }
+        BlockPos litter = wideSlope.below(5).east(5);
+        level.setBlockAndUpdate(litter, Blocks.LEAF_LITTER.defaultBlockState());
+        BlockPos grassBase = wideSlope.below(5).west(2);
+        level.setBlockAndUpdate(grassBase.below(), Blocks.DIRT.defaultBlockState());
+        level.setBlock(grassBase, Blocks.TALL_GRASS.defaultBlockState(), Block.UPDATE_CLIENTS);
+        level.setBlock(grassBase.above(), Blocks.TALL_GRASS.defaultBlockState()
+            .setValue(BlockStateProperties.DOUBLE_BLOCK_HALF, DoubleBlockHalf.UPPER), Block.UPDATE_CLIENTS);
         regulator.cargo.setItem(0, new ItemStack(Items.GRAVEL, 35));
         regulator.regulate(level, driver, wideSlope.below());
-        test.assertTrue(regulator.cargo.isEmpty(), "Wide mode consumes one block for each of the 35 blocks in the bed");
+        test.assertTrue(regulator.cargo.countItem(Items.GRAVEL) == 0 && regulator.cargo.countItem(Items.COBBLESTONE) == 1
+            && regulator.cargo.countItem(Items.LEAF_LITTER) == 1,
+            "Wide mode fills the slope through leaf litter and tall grass, paying only for placed ballast");
+        regulator.cargo.clearContent();
         for (int depth = 0; depth <= 4; depth++) {
             for (int side = -6; side <= 6; side++) {
                 var state = level.getBlockState(wideSlope.below(1 + depth).east(side));
@@ -734,7 +760,21 @@ final class RailwayAdditionsGameTest {
         test.assertTrue(menu.clickMenuButton(driver, BallastRegulatorMenu.CYCLE_MODE)
             && menu.mode() == TrainVehicle.BallastMode.NARROW, "Track Only cycles to Narrow");
         menu.removed(driver);
+        RailwayGameTests.straight(level, start.north(), 0);
+        var gondola = RailwayGameTests.vehicle(level, TrainVehicle.Kind.GONDOLA, start.north());
+        couple(driver, regulator, -1, gondola, 1);
+        level.setBlockAndUpdate(start.north().below(2), Blocks.STONE.defaultBlockState());
+        level.setBlockAndUpdate(start.north().below(), Blocks.SAND.defaultBlockState());
+        regulator.cargo.setItem(0, new ItemStack(Items.GRAVEL, 2));
+        for (int slot = 1; slot < regulator.cargo.getContainerSize(); slot++) {
+            regulator.cargo.setItem(slot, new ItemStack(Items.DIRT, 64));
+        }
+        regulator.regulate(level, driver, start.north().below());
+        test.assertTrue(regulator.cargo.getItem(0).getCount() == 1 && gondola.cargo.countItem(Items.SAND) == 1
+            && level.getBlockState(start.north().below()).is(Trainmod.BALLAST.get()),
+            "The regulator sends roadbed drops to a coupled gondola when its own cargo is full");
         regulator.discard();
+        gondola.discard();
 
         BlockPos pushTrack = start.east(6);
         for (int z = 0; z <= 8; z++) {
@@ -755,6 +795,57 @@ final class RailwayAdditionsGameTest {
             "An active regulator also fills the track when pushed without a locomotive");
         pushed.discard();
         test.succeed();
+    }
+
+    static void regulatorRechecksSlopes(GameTestHelper test) {
+        var level = test.getLevel();
+        BlockPos start = isolatedTrack(test, 211).south(2);
+        for (int z = 0; z <= 10; z++) RailwayGameTests.straight(level, start.south(z), 0);
+        BlockPos worked = start.south(4);
+        BlockPos crest = worked.below().east();
+        BlockPos slope = worked.below(2).east(2);
+        level.setBlockAndUpdate(crest, Blocks.OAK_LOG.defaultBlockState());
+        level.setBlockAndUpdate(crest.below(), Blocks.STONE.defaultBlockState());
+        level.setBlockAndUpdate(slope.below(), Blocks.STONE.defaultBlockState());
+
+        var player = test.makeMockServerPlayerInLevel();
+        var regulator = RailwayGameTests.vehicle(level, TrainVehicle.Kind.BALLAST_CAR, start.south(2));
+        regulator.cycleBallastMode();
+        regulator.toggleBallastWork(player);
+        regulator.cargo.setItem(0, new ItemStack(Items.GRAVEL, 64));
+        for (int tick = 0; tick < 24; tick++) {
+            regulator.push(0, 0, 0.1);
+            regulator.tick();
+        }
+        var brake = VehicleHitboxes.of(regulator.kind).controls().stream()
+            .filter(control -> control.component() == VehicleHitboxes.Component.HANDBRAKE).findFirst().orElseThrow();
+        var frame = new VehicleHitboxes.Frame(regulator.position(), regulator.getYRot(), regulator.getXRot(), 0);
+        player.setPos(regulator.position().add(1, 0, 0));
+        regulator.interact(player, InteractionHand.MAIN_HAND, frame.world(brake.box().getCenter()).subtract(regulator.position()));
+        var ballast = Trainmod.BALLAST.get();
+        test.assertTrue(regulator.getZ() > worked.getZ() + 2 && regulator.handbrakeApplied()
+            && level.getBlockState(worked.below()).is(ballast)
+            && level.getBlockState(crest).is(Blocks.OAK_LOG) && level.getBlockState(slope).isAir(),
+            "The regulator passes the log, fills the center, and leaves a gap in the blocked slope");
+        int gravelAfterPass = regulator.cargo.countItem(Items.GRAVEL);
+        test.runAtTickTime(65, () -> {
+            regulator.toggleBallastWork(player);
+            level.removeBlock(crest, false);
+        });
+        test.runAtTickTime(82, () -> {
+            test.assertTrue(level.getBlockState(crest).isAir() && level.getBlockState(slope).isAir(),
+                "The paused regulator leaves the cleared gap alone");
+            regulator.toggleBallastWork(player);
+        });
+        test.runAtTickTime(110, () -> {
+            test.assertTrue(level.getBlockState(crest).is(ballast) && level.getBlockState(slope).is(ballast),
+                "The parked regulator fills the previously blocked crest and the slope beyond it");
+            test.assertTrue(regulator.cargo.countItem(Items.GRAVEL) == gravelAfterPass - 2,
+                "The regulator pays once for each newly filled block");
+            regulator.discard();
+            level.getServer().getPlayerList().remove(player);
+            test.succeed();
+        });
     }
 
     static void regulatorWalls(GameTestHelper test) {
@@ -780,7 +871,8 @@ final class RailwayAdditionsGameTest {
 
                 for (boolean wide : new boolean[]{false, true}) {
                     TrackWork.ballast(level, driver, crest, 64 * TrackWork.BALLAST_PORTIONS,
-                        wide ? TrainVehicle.BallastMode.WIDE : TrainVehicle.BallastMode.NARROW);
+                        wide ? TrainVehicle.BallastMode.WIDE : TrainVehicle.BallastMode.NARROW,
+                        List.of(new SimpleContainer(27)));
                     test.assertTrue(level.getBlockState(crest.west()).is(Blocks.STONE), "The regulator preserves the wall at the crest");
                     for (int depth = 2; depth <= 4; depth++) {
                         BlockPos behindWall = crest.offset(-2, -depth, diagonal ? 2 : 0);
@@ -861,7 +953,7 @@ final class RailwayAdditionsGameTest {
                     "The intact parts remain usable and the damaged middle blocks both directions");
                 test.assertTrue(RailNetwork.advance(level, engine.cursor(), -0.5) != null,
                     "The engine can reverse away after breaking track");
-                test.assertTrue(TrackWork.ballast(level, driver, damaged.below(), 8, TrainVehicle.BallastMode.TRACK_ONLY) == 0,
+                test.assertTrue(TrackWork.ballast(level, driver, damaged.below(), 8, TrainVehicle.BallastMode.TRACK_ONLY, List.of()) == 0,
                     "Damaged track must be recycled");
                 test.assertTrue(level.getBlockState(damaged).getShape(level, damaged).max(Direction.Axis.X) > 1,
                     "The displaced rail and ties can be targeted for recycling");
@@ -948,8 +1040,418 @@ final class RailwayAdditionsGameTest {
                 driver.stopRiding();
                 engine.discard();
                 regulator.discard();
+                level.getServer().getPlayerList().remove(driver);
             })
             .thenSucceed();
+    }
+
+    static void boreWorkTrain(GameTestHelper test) {
+        var level = test.getLevel();
+        BlockPos end = isolatedTrack(test, 72).south(10);
+        level.getChunkAt(end.south(8));
+        for (int i = 0; i <= 10; i++) RailwayGameTests.straight(level, end.north(i), 0);
+        BlockPos brick = end.south();
+        BlockPos deck = end.south(2);
+        BlockPos gap = end.south(3);
+        BlockPos grass = end.south(4);
+        level.setBlockAndUpdate(brick.below(), Blocks.STONE_BRICKS.defaultBlockState());
+        level.setBlockAndUpdate(deck.below(), Trainmod.STEEL_GIRDER.get().defaultBlockState()
+            .setValue(BridgeBlock.AXIS, Direction.Axis.Z));
+        level.setBlockAndUpdate(grass.below(), Blocks.GRASS_BLOCK.defaultBlockState());
+        for (int y = 0; y <= 6; y++) level.setBlockAndUpdate(brick.above(y), Blocks.OAK_LOG.defaultBlockState());
+        BlockPos branch = brick.above(7).east();
+        level.setBlockAndUpdate(branch, Blocks.OAK_LOG.defaultBlockState());
+        var pig = net.minecraft.world.entity.EntityTypes.PIG.create(level, net.minecraft.world.entity.EntitySpawnReason.COMMAND);
+        pig.setNoAi(true);
+        pig.setPos(Vec3.atBottomCenterOf(deck));
+        level.addFreshEntity(pig);
+
+        var bore = RailwayGameTests.vehicle(level, TrainVehicle.Kind.TUNNEL_BORE, end.north(2));
+        var gondola = RailwayGameTests.vehicle(level, TrainVehicle.Kind.GONDOLA, end.north(6));
+        var driver = test.makeMockServerPlayerInLevel();
+        try {
+            GameType.SURVIVAL.updatePlayerAbilities(driver.getAbilities());
+            couple(driver, bore, -1, gondola, 1);
+            test.assertTrue(bore.coupledId(1) == gondola.getId(), "The gondola is the bore's trailing supply car");
+            bore.supplies.setItem(TrainVehicle.RAIL_SUPPLY, new ItemStack(Trainmod.RAIL.get(), 1));
+            gondola.cargo.setItem(0, new ItemStack(Trainmod.RAIL.get(), 11));
+            gondola.cargo.setItem(1, new ItemStack(Trainmod.TIE_BUNDLE.get(), 4));
+            gondola.cargo.setItem(2, new ItemStack(Items.COBBLESTONE));
+            driver.setPos(bore.position());
+            test.assertTrue(driver.startRiding(bore), "The driver boards the bore");
+            for (int tick = 0; tick < 75; tick++) {
+                bore.receiveControls(driver, (byte) (TrainControls.FORWARD | TrainControls.WORK));
+                bore.tick();
+            }
+            var bridge = Trainmod.TRACK.get(TrackGeometry.Kind.BRIDGE_STRAIGHT).get();
+            test.assertTrue(level.getBlockState(brick).is(bridge) && level.getBlockState(deck).is(bridge)
+                && level.getBlockState(brick.below()).is(Blocks.STONE_BRICKS)
+                && level.getBlockState(deck.below()).is(Trainmod.STEEL_GIRDER.get()),
+                "The bore lays reinforced track on both bridge foundations. Status: " + RailwayGameTests.overlayMessages(driver));
+            test.assertTrue(RailNetwork.railAt(level, gap) != null && RailNetwork.railAt(level, grass) != null
+                && level.getBlockState(gap.below()).is(Blocks.COBBLESTONE)
+                && level.getBlockState(grass.below()).is(Blocks.GRASS_BLOCK),
+                "The bore fills an unsupported center and retains a sturdy grass foundation");
+            test.assertTrue(bore.supplies.isEmpty() && gondola.cargo.countItem(Trainmod.RAIL.get()) == 0
+                && gondola.cargo.countItem(Trainmod.TIE_BUNDLE.get()) == 0
+                && gondola.cargo.countItem(Items.COBBLESTONE) == 0,
+                "Four sections spend twelve rails, four tie bundles, and one cobblestone across both inventories");
+            test.assertTrue(gondola.cargo.countItem(Items.OAK_LOG) == 8 && level.getBlockState(branch).isAir(),
+                "The excavation follows logs above and diagonally beyond its face");
+            test.assertTrue(pig.isAlive() && Math.abs(pig.getX() - bore.getX()) > 1,
+                "The bore pushes a mob to the side and continues laying track");
+        } finally {
+            driver.stopRiding();
+            bore.discard();
+            gondola.discard();
+            pig.discard();
+            level.getServer().getPlayerList().remove(driver);
+        }
+        test.succeed();
+    }
+
+    static void treecuttersCrew(GameTestHelper test) {
+        var level = test.getLevel();
+        BlockPos root = isolatedTrack(test, 258).south(7);
+        for (int z = -5; z <= 5; z++) {
+            RailwayGameTests.straight(level, root.south(z), 0);
+            for (int x = -7; x <= 7; x++) {
+                level.setBlockAndUpdate(root.offset(x, -1, z), Blocks.DIRT.defaultBlockState());
+            }
+        }
+        var passengerCar = RailwayGameTests.vehicle(level, TrainVehicle.Kind.TREECUTTERS_PASSENGER_CAR, root);
+        var gondola = RailwayGameTests.vehicle(level, TrainVehicle.Kind.GONDOLA, root.north(3));
+        BlockPos stump = root.east(6);
+        BlockPos branch = stump.above(5).east();
+        BlockPos distant = root.west(7);
+        BlockPos coveredTrack = root.south(2).above(4);
+        for (int i = 0; i <= 4; i++) level.setBlockAndUpdate(stump.above(i), Blocks.OAK_LOG.defaultBlockState());
+        level.setBlockAndUpdate(branch, Blocks.OAK_LOG.defaultBlockState());
+        level.setBlockAndUpdate(distant, Blocks.OAK_LOG.defaultBlockState());
+        level.setBlockAndUpdate(coveredTrack.below(), Blocks.STONE.defaultBlockState());
+        level.setBlockAndUpdate(coveredTrack, Blocks.BIRCH_LOG.defaultBlockState());
+        var operator = test.makeMockServerPlayerInLevel();
+        var workers = new java.util.ArrayList<TreecuttersWorker>();
+        test.runAtTickTime(4, () -> {
+            test.assertTrue(level.getBlockState(stump).is(Blocks.OAK_LOG)
+                && passengerCar.getFirstPassenger() == null && !passengerCar.treecuttersActive(), "A new car starts with its lantern off");
+            couple(operator, passengerCar, -1, gondola, 1);
+            test.assertTrue(passengerCar.coupledId(1) == gondola.getId(), "The passenger car couples to a regular gondola");
+            useTreecuttersControl(test, operator, passengerCar, VehicleHitboxes.Component.CRAFTING_TABLE);
+            test.assertTrue(operator.containerMenu instanceof CraftingMenu, "The table opens the 3 by 3 crafting grid");
+            var crafting = (CraftingMenu) operator.containerMenu;
+            crafting.getInputGridSlots().getFirst().setByPlayer(new ItemStack(Items.OAK_LOG));
+            test.assertTrue(crafting.getResultSlot().getItem().is(Items.OAK_PLANKS) && crafting.stillValid(operator),
+                "The onboard crafting table makes vanilla recipes");
+            operator.closeContainer();
+            useTreecuttersControl(test, operator, passengerCar, VehicleHitboxes.Component.TREECUTTERS_LANTERN);
+            var restored = new TrainVehicle(Trainmod.VEHICLES.get(passengerCar.kind).get(), level, passengerCar.kind);
+            restored.readAdditionalSaveData(vehicleData(level, passengerCar));
+            test.assertTrue(passengerCar.treecuttersActive() && restored.treecuttersActive(), "The lit lantern state survives a reload");
+        });
+        test.runAtTickTime(12, () -> workers.add(level.getEntitiesOfClass(TreecuttersWorker.class, new AABB(root).inflate(10)).getFirst()));
+        test.runAtTickTime(54, () -> {
+            test.assertTrue(gondola.cargo.countItem(Items.OAK_LOG) == 6 && level.getBlockState(branch).isAir(),
+                "The villager walks to the edge of the six-block radius and puts the whole tree in the gondola before the teleport timeout");
+            test.assertTrue(level.getBlockState(distant).is(Blocks.OAK_LOG), "Logs outside the six-block radius stay intact");
+            workers.getFirst().kill(level);
+        });
+        BlockPos floating = root.west(2).above(5);
+        test.runAtTickTime(60, () -> {
+            test.assertTrue(passengerCar.getFirstPassenger() instanceof TreecuttersWorker replacement
+                && replacement != workers.getFirst(), "The passenger car respawns killed crew");
+            workers.add((TreecuttersWorker) passengerCar.getFirstPassenger());
+            level.removeBlock(floating.atY(root.getY() - 1), false);
+            level.setBlockAndUpdate(floating, Blocks.BIRCH_LOG.defaultBlockState());
+        });
+        test.runAtTickTime(84, () -> {
+            test.assertTrue(level.getBlockState(floating).is(Blocks.BIRCH_LOG) && workers.getLast().getY() < floating.getY() - 2,
+                "The worker tries reaching an overhead log on foot before teleporting");
+        });
+        test.runAtTickTime(130, () -> {
+            test.assertTrue(level.getBlockState(floating).isAir() && gondola.cargo.countItem(Items.BIRCH_LOG) == 1,
+                "The worker still teleports after the walking timeout when the trunk has no ground underneath");
+            test.assertTrue(level.getBlockState(coveredTrack).is(Blocks.BIRCH_LOG),
+                "The worker preserves logs above a nearby roof even when the car is outside");
+            var worker = workers.getLast();
+            worker.stopRiding();
+            Vec3 tooFar = passengerCar.position().add(0, 30, 0);
+            worker.teleportTo(tooFar.x, tooFar.y, tooFar.z);
+        });
+        BlockPos tunnelLog = root.above(4);
+        test.runAtTickTime(135, () -> {
+            test.assertTrue(workers.getLast().isRemoved() && passengerCar.getFirstPassenger() instanceof TreecuttersWorker,
+                "The passenger car replaces crew that go out of range");
+            workers.add((TreecuttersWorker) passengerCar.getFirstPassenger());
+            level.setBlockAndUpdate(tunnelLog.below(), Blocks.STONE.defaultBlockState());
+            level.setBlockAndUpdate(tunnelLog, Blocks.OAK_LOG.defaultBlockState());
+        });
+        test.runAtTickTime(205, () -> {
+            test.assertTrue(level.getBlockState(tunnelLog.below()).is(Blocks.STONE)
+                && level.getBlockState(tunnelLog).is(Blocks.OAK_LOG) && workers.getLast().getVehicle() == passengerCar,
+                "Under a non-log tunnel roof the worker stays aboard and leaves the log overhead intact");
+            useTreecuttersControl(test, operator, passengerCar, VehicleHitboxes.Component.TREECUTTERS_LANTERN);
+            test.assertTrue(!passengerCar.treecuttersActive() && workers.getLast().isRemoved(),
+                "Extinguishing the lantern immediately dismisses the worker");
+        });
+        test.runAtTickTime(209, () -> {
+            test.assertTrue(passengerCar.getFirstPassenger() == null, "The unlit car stays unstaffed");
+            gondola.discard();
+            passengerCar.discard();
+            level.getServer().getPlayerList().remove(operator);
+            test.succeed();
+        });
+    }
+
+    static void treecuttersSwimmingAndOverhead(GameTestHelper test) {
+        var level = test.getLevel();
+        BlockPos root = isolatedTrack(test, 20).south(7);
+        for (int z = -4; z <= 4; z++) {
+            RailwayGameTests.straight(level, root.south(z), 0);
+            for (int x = -2; x <= 7; x++) {
+                BlockPos floor = root.offset(x, -1, z);
+                level.setBlockAndUpdate(floor.below(2), Blocks.STONE.defaultBlockState());
+                level.setBlockAndUpdate(floor.below(), Blocks.STONE.defaultBlockState());
+                level.setBlockAndUpdate(floor, Blocks.STONE.defaultBlockState());
+            }
+        }
+        for (int x = 2; x <= 4; x++) {
+            for (int z = -3; z <= 3; z++) {
+                level.setBlockAndUpdate(root.offset(x, -2, z), Blocks.WATER.defaultBlockState());
+                level.setBlockAndUpdate(root.offset(x, -1, z), Blocks.WATER.defaultBlockState());
+            }
+            for (int z : new int[]{-4, 4}) {
+                for (int y = 0; y <= 2; y++) level.setBlockAndUpdate(root.offset(x, y, z), Blocks.STONE.defaultBlockState());
+            }
+        }
+        var car = RailwayGameTests.vehicle(level, TrainVehicle.Kind.TREECUTTERS_PASSENGER_CAR, root);
+        BlockPos crown = root.east(6).above(50);
+        level.setBlockAndUpdate(crown, Blocks.SPRUCE_LOG.defaultBlockState());
+        var player = test.makeMockServerPlayerInLevel();
+        boolean[] swam = {false};
+        test.runAtTickTime(3, () -> {
+            useTreecuttersControl(test, player, car, VehicleHitboxes.Component.TREECUTTERS_LANTERN);
+            player.setPos(Vec3.atBottomCenterOf(root.west(2)));
+        });
+        test.onEachTick(() -> {
+            for (var worker : level.getEntitiesOfClass(TreecuttersWorker.class, new AABB(root).inflate(8))) {
+                swam[0] |= worker.isInWater();
+            }
+        });
+        test.runAtTickTime(59, () -> {
+            test.assertTrue(swam[0], "The villager enters and swims across the water to reach the trunk");
+            test.assertTrue(level.getBlockState(crown).isAir()
+                && !level.getEntitiesOfClass(ItemEntity.class,
+                    new AABB(crown).setMinY(root.getY() - 1).inflate(2),
+                    item -> item.getItem().is(Items.SPRUCE_LOG)).isEmpty(),
+                "The villager reaches fifty blocks overhead from dry ground before any teleport can occur");
+            car.discard();
+            level.getServer().getPlayerList().remove(player);
+            test.succeed();
+        });
+    }
+
+    static void treecuttersGroundDrops(GameTestHelper test) {
+        var level = test.getLevel();
+        BlockPos root = isolatedTrack(test, 175).south(7);
+        for (int z = -5; z <= 5; z++) {
+            RailwayGameTests.straight(level, root.south(z), 0);
+            for (int x = 1; x <= 5; x++) {
+                level.setBlockAndUpdate(root.offset(x, -1, z), Blocks.DIRT.defaultBlockState());
+            }
+        }
+        var car = RailwayGameTests.vehicle(level, TrainVehicle.Kind.TREECUTTERS_PASSENGER_CAR, root);
+        var gondola = RailwayGameTests.vehicle(level, TrainVehicle.Kind.GONDOLA, root.north(3));
+        BlockPos stump = root.east(3);
+        level.setBlockAndUpdate(stump, Blocks.OAK_LOG.defaultBlockState());
+        level.setBlockAndUpdate(stump.above(), Blocks.OAK_LOG.defaultBlockState());
+        for (int i = 1; i < gondola.cargo.getContainerSize(); i++) {
+            gondola.cargo.setItem(i, new ItemStack(Items.COBBLESTONE, 64));
+        }
+        gondola.cargo.setItem(0, new ItemStack(Items.OAK_LOG, 63));
+        Vec3 ground = Vec3.atBottomCenterOf(stump.south()).add(0, 0.25, 0);
+        for (var item : List.of(Items.STICK, Items.OAK_SAPLING, Items.APPLE, Items.DIRT)) {
+            var drop = new ItemEntity(level, ground.x, ground.y, ground.z, new ItemStack(item), 0, 0, 0);
+            drop.setNoPickUpDelay();
+            level.addFreshEntity(drop);
+        }
+        var player = test.makeMockServerPlayerInLevel();
+        test.runAtTickTime(4, () -> {
+            couple(player, car, -1, gondola, 1);
+            test.assertTrue(car.coupledId(1) == gondola.getId(), "A regular gondola is coupled to receive the items");
+            useTreecuttersControl(test, player, car, VehicleHitboxes.Component.TREECUTTERS_LANTERN);
+            player.setPos(Vec3.atBottomCenterOf(root));
+        });
+        var area = new AABB(stump).inflate(3);
+        test.runAtTickTime(50, () -> {
+            test.assertTrue(level.getBlockState(stump).isAir() && gondola.cargo.countItem(Items.OAK_LOG) == 64
+                && level.getEntitiesOfClass(ItemEntity.class, area, item -> item.getItem().is(Items.OAK_LOG))
+                    .stream().mapToInt(item -> item.getItem().getCount()).sum() == 1,
+                "The gondola takes the log it can fit and the other log drops at the tree");
+            gondola.cargo.removeItem(0, 1);
+            for (int i = 1; i <= 3; i++) gondola.cargo.setItem(i, ItemStack.EMPTY);
+        });
+        test.runAtTickTime(115, () -> {
+            test.assertTrue(gondola.cargo.countItem(Items.OAK_LOG) == 64 && gondola.cargo.countItem(Items.STICK) == 1
+                && gondola.cargo.countItem(Items.OAK_SAPLING) == 1 && gondola.cargo.countItem(Items.APPLE) == 1,
+                "The villager picks up fallen logs and leaf drops after space opens in the gondola");
+            test.assertTrue(gondola.cargo.countItem(Items.DIRT) == 0
+                && !level.getEntitiesOfClass(ItemEntity.class, area, item -> item.getItem().is(Items.DIRT)).isEmpty(),
+                "Other ground items stay where they were dropped");
+            car.discard();
+            gondola.discard();
+            level.getServer().getPlayerList().remove(player);
+            test.succeed();
+        });
+    }
+
+    static void treecuttersCooperate(GameTestHelper test) {
+        var level = test.getLevel();
+        BlockPos root = isolatedTrack(test, 142).south(2).west(6);
+        for (int z = -1; z <= 13; z++) {
+            for (int x = -2; x <= 14; x++) {
+                level.setBlockAndUpdate(root.offset(x, -1, z), Blocks.DIRT.defaultBlockState());
+            }
+            for (int x : new int[]{0, 9, 12}) RailwayGameTests.straight(level, root.offset(x, 0, z), 0);
+        }
+        var lead = RailwayGameTests.vehicle(level, TrainVehicle.Kind.TREECUTTERS_PASSENGER_CAR, root.south(10));
+        var mainCargo = RailwayGameTests.vehicle(level, TrainVehicle.Kind.GONDOLA, root.south(7));
+        var flatcar = RailwayGameTests.vehicle(level, TrainVehicle.Kind.FLATCAR, root.south(4));
+        var tail = RailwayGameTests.vehicle(level, TrainVehicle.Kind.FLATCAR, root.south());
+        var helper = RailwayGameTests.vehicle(level, TrainVehicle.Kind.TREECUTTERS_PASSENGER_CAR, root.offset(12, 0, 3));
+        var helperCargo = RailwayGameTests.vehicle(level, TrainVehicle.Kind.GONDOLA, root.offset(12, 0, 6));
+        var siding = RailwayGameTests.vehicle(level, TrainVehicle.Kind.GONDOLA, root.offset(9, 0, 3));
+        BlockPos oak = root.offset(4, 0, 1);
+        BlockPos birch = root.offset(5, 0, 4);
+        BlockPos foliage = oak.east().above();
+        BlockPos decoration = oak.west().above();
+        level.setBlockAndUpdate(oak, Blocks.OAK_LOG.defaultBlockState());
+        level.setBlockAndUpdate(birch, Blocks.BIRCH_LOG.defaultBlockState());
+        level.setBlockAndUpdate(foliage, Blocks.OAK_LEAVES.defaultBlockState().setValue(BlockStateProperties.DISTANCE, 1));
+        level.setBlockAndUpdate(decoration, Blocks.OAK_LEAVES.defaultBlockState().setValue(BlockStateProperties.PERSISTENT, true));
+        var player = test.makeMockServerPlayerInLevel();
+        test.runAtTickTime(4, () -> {
+            couple(player, lead, -1, mainCargo, 1);
+            couple(player, mainCargo, -1, flatcar, 1);
+            couple(player, flatcar, -1, tail, 1);
+            couple(player, helper, 1, helperCargo, -1);
+            test.assertTrue(lead.loadedTrain(level).size() == 4 && helper.loadedTrain(level).size() == 2,
+                "The two crews are on separate consists");
+            useTreecuttersControl(test, player, lead, VehicleHitboxes.Component.TREECUTTERS_LANTERN);
+            useTreecuttersControl(test, player, helper, VehicleHitboxes.Component.TREECUTTERS_LANTERN);
+            player.setPos(Vec3.atBottomCenterOf(root.west(2)));
+        });
+        test.runAtTickTime(95, () -> {
+            test.assertTrue(level.getBlockState(oak).isAir() && level.getBlockState(birch).isAir()
+                && level.getBlockState(foliage).isAir() && level.getBlockState(decoration).is(Blocks.OAK_LEAVES),
+                "The workers clear trees along the train and remove natural leaves around the trunks");
+            int mainLogs = mainCargo.cargo.countItem(Items.OAK_LOG) + mainCargo.cargo.countItem(Items.BIRCH_LOG);
+            int helperLogs = helperCargo.cargo.countItem(Items.OAK_LOG) + helperCargo.cargo.countItem(Items.BIRCH_LOG);
+            test.assertTrue(mainLogs == 1 && helperLogs == 1 && siding.cargo.isEmpty(),
+                "Nearby crews split the jobs and each uses only its own gondola. Logs: " + mainLogs + " / " + helperLogs
+                    + ", crew ticks: " + lead.tickCount + " / " + helper.tickCount);
+            for (var car : List.of(lead, mainCargo, flatcar, tail, helper, helperCargo, siding)) car.discard();
+            level.getServer().getPlayerList().remove(player);
+            test.succeed();
+        });
+    }
+
+    static void treecuttersBallastClearance(GameTestHelper test) {
+        var level = test.getLevel();
+        BlockPos root = isolatedTrack(test, 194).south(5);
+        for (int z = -5; z <= 6; z++) {
+            RailwayGameTests.straight(level, root.south(z), 0);
+            level.setBlockAndUpdate(root.offset(6, -1, z), Blocks.DIRT.defaultBlockState());
+        }
+        var regulator = RailwayGameTests.vehicle(level, TrainVehicle.Kind.BALLAST_CAR, root);
+        var crew = RailwayGameTests.vehicle(level, TrainVehicle.Kind.TREECUTTERS_PASSENGER_CAR, root.north(3));
+        BlockPos leaf = root.below().east();
+        level.setBlockAndUpdate(leaf.below(), Blocks.STONE.defaultBlockState());
+        var player = test.makeMockServerPlayerInLevel();
+        test.runAtTickTime(4, () -> {
+            couple(player, regulator, -1, crew, 1);
+            regulator.cycleBallastMode();
+            regulator.toggleBallastWork(player);
+            regulator.cargo.setItem(0, new ItemStack(Items.GRAVEL, 16));
+            useTreecuttersControl(test, player, crew, VehicleHitboxes.Component.TREECUTTERS_LANTERN);
+        });
+        test.startSequence().thenWaitUntil(() -> test.assertTrue(crew.getFirstPassenger() instanceof TreecuttersWorker,
+            "The worker boards before the regulator asks for help")).thenExecute(() -> {
+            var worker = (TreecuttersWorker) crew.getFirstPassenger();
+            worker.stopRiding();
+            Vec3 footing = Vec3.atBottomCenterOf(root.east(6));
+            worker.teleportTo(footing.x, footing.y, footing.z);
+            level.setBlockAndUpdate(leaf, Blocks.OAK_LEAVES.defaultBlockState().setValue(BlockStateProperties.PERSISTENT, true));
+            regulator.regulate(level, player, root.below());
+            test.assertTrue(level.getBlockState(leaf).is(Blocks.OAK_LEAVES), "Leaves initially block the ballast crest");
+        }).thenWaitUntil(() -> test.assertTrue(level.getBlockState(leaf).isAir(), "The worker clears the requested leaf"))
+            .thenExecute(() -> {
+                var worker = level.getEntitiesOfClass(TreecuttersWorker.class, new AABB(root).inflate(9)).getFirst();
+                test.assertTrue(worker.position().subtract(Vec3.atCenterOf(leaf)).horizontalDistanceSqr() > 16,
+                    "The worker clears the leaf from more than four blocks away");
+                Vec3 inWay = Vec3.atBottomCenterOf(leaf);
+                worker.teleportTo(inWay.x, inWay.y, inWay.z);
+                regulator.regulate(level, player, root.below());
+                test.assertTrue(level.getBlockState(leaf).isAir(), "The regulator leaves room for a worker in the placement cell");
+                Vec3 footing = Vec3.atBottomCenterOf(root.east(6));
+                worker.teleportTo(footing.x, footing.y, footing.z);
+                regulator.regulate(level, player, root.below());
+                test.assertTrue(level.getBlockState(leaf).is(Trainmod.BALLAST.get()), "The regulator fills the cleared crest");
+                crew.discard();
+                regulator.discard();
+                level.getServer().getPlayerList().remove(player);
+            }).thenSucceed();
+    }
+
+    static void treecuttersFromAbove(GameTestHelper test) {
+        var level = test.getLevel();
+        BlockPos root = isolatedTrack(test, 279).south(5);
+        for (int z = -3; z <= 3; z++) {
+            RailwayGameTests.straight(level, root.south(z), 0);
+            for (int x = 1; x <= 5; x++) level.setBlockAndUpdate(root.offset(x, -1, z), Blocks.DIRT.defaultBlockState());
+        }
+        var crew = RailwayGameTests.vehicle(level, TrainVehicle.Kind.TREECUTTERS_PASSENGER_CAR, root);
+        BlockPos trunk = root.east(5);
+        for (int y = 0; y < 8; y++) level.setBlockAndUpdate(trunk.above(y), Blocks.OAK_LOG.defaultBlockState());
+        BlockPos edgeLeaf = trunk.east(2).above(7);
+        BlockPos standingLog = edgeLeaf.east(2);
+        BlockPos cutLeaf = trunk.west().above(7);
+        level.getChunkAt(standingLog);
+        level.setBlockAndUpdate(standingLog, Blocks.OAK_LOG.defaultBlockState());
+        var leaves = Blocks.OAK_LEAVES.defaultBlockState();
+        level.setBlockAndUpdate(edgeLeaf.east(), leaves.setValue(BlockStateProperties.DISTANCE, 1));
+        level.setBlockAndUpdate(edgeLeaf, leaves.setValue(BlockStateProperties.DISTANCE, 2));
+        level.setBlockAndUpdate(cutLeaf, leaves.setValue(BlockStateProperties.DISTANCE, 1));
+        var player = test.makeMockServerPlayerInLevel();
+        useTreecuttersControl(test, player, crew, VehicleHitboxes.Component.TREECUTTERS_LANTERN);
+        test.startSequence().thenWaitUntil(() -> test.assertTrue(
+            !level.getEntitiesOfClass(TreecuttersWorker.class, new AABB(root).inflate(10), worker -> !worker.isPassenger()).isEmpty(),
+            "The worker dismounts and takes the tree job")).thenExecute(() -> {
+                var worker = level.getEntitiesOfClass(TreecuttersWorker.class, new AABB(root).inflate(10)).getFirst();
+                Vec3 top = Vec3.atBottomCenterOf(trunk.above(8));
+                worker.teleportTo(top.x, top.y, top.z);
+                worker.setOnGround(true);
+            }).thenExecuteAfter(3, () -> {
+                test.assertTrue(level.getBlockState(trunk).isAir() && level.getBlockState(trunk.above(7)).isAir(),
+                    "The villager can cut down through the trunk while standing above it");
+                test.assertTrue(level.getBlockState(cutLeaf).isAir() && level.getBlockState(edgeLeaf).is(Blocks.OAK_LEAVES)
+                    && level.getBlockState(standingLog).is(Blocks.OAK_LOG),
+                    "Pruning clears leaves by the felled trunk and keeps edge leaves two blocks from a standing log");
+                crew.discard();
+                level.getServer().getPlayerList().remove(player);
+            }).thenSucceed();
+    }
+
+    private static void useTreecuttersControl(GameTestHelper test, ServerPlayer player, TrainVehicle car,
+                                             VehicleHitboxes.Component component) {
+        Vec3 target = VehicleHitboxes.of(car.kind).controls().stream().filter(control -> control.component() == component)
+            .findFirst().orElseThrow().box().getCenter();
+        Vec3 eye = target.add(2, 0, 0);
+        var frame = new VehicleHitboxes.Frame(car.position(), car.getYRot(), car.getXRot(), 0);
+        player.setPos(frame.world(eye).subtract(0, player.getEyeHeight(), 0));
+        var picked = VehicleHitboxes.pick(car, eye, target);
+        test.assertTrue(picked != null && picked.component() == component, "The " + component + " is selectable from the open side");
+        car.interact(player, InteractionHand.MAIN_HAND, frame.world(picked.point()).subtract(car.position()));
     }
 
     static void boreTickets(GameTestHelper test) {

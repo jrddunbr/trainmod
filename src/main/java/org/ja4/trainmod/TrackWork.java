@@ -3,23 +3,27 @@ package org.ja4.trainmod;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.SimpleContainer;
-import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.vehicle.minecart.AbstractMinecart;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.DoublePlantBlock;
+import net.minecraft.world.level.block.VegetationBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.ChestType;
+import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.common.NeoForge;
@@ -29,7 +33,8 @@ import net.neoforged.neoforge.event.level.block.BreakBlockEvent;
 import org.jspecify.annotations.Nullable;
 
 final class TrackWork {
-    private static final int RAILS_PER_BLOCK = 2;
+    private static final int RAILS_PER_BLOCK = TrackMaterials.railsFor(TrackGeometry.Kind.STRAIGHT);
+    private static final int BRIDGE_RAILS_PER_BLOCK = TrackMaterials.railsFor(TrackGeometry.Kind.BRIDGE_STRAIGHT);
     private static final int BALLAST_DEPTH = 4;
     static final int BALLAST_PORTIONS = 8;
 
@@ -98,14 +103,21 @@ final class TrackWork {
         int dx = (int) Math.round(heading.x), dz = (int) Math.round(heading.z);
         int rotation = RailwayBlocks.Ballast.heading((float) Math.toDegrees(Math.atan2(-heading.x, heading.z)));
         BlockState existingRoadbed = level.getBlockState(next.below());
-        boolean needsStone = lay && !(existingRoadbed.is(Trainmod.BALLAST.get())
-            || roadbedMaterial(existingRoadbed) && TrackBlock.supported(level, next));
+        boolean needsStone = lay && !TrackBlock.supported(level, next);
+        boolean bridge = bridgeFoundation(existingRoadbed);
+        var trackKind = bridge ? TrackGeometry.Kind.BRIDGE_STRAIGHT : TrackGeometry.Kind.UNBALLASTED_STRAIGHT;
+        List<SimpleContainer> gondolas = trailing.stream().map(car -> car.cargo).toList();
+        var inventory = new WorkCargo();
         boolean usesSupplies = !driver.getAbilities().instabuild;
         if (lay && usesSupplies) {
-            ItemStack rails = bore.supplies.getItem(TrainVehicle.RAIL_SUPPLY);
-            if (!rails.is(Trainmod.RAIL.get()) || rails.getCount() < RAILS_PER_BLOCK) return new Issue("bore_need_rail");
-            if (!bore.supplies.getItem(TrainVehicle.TIE_SUPPLY).is(Trainmod.TIE_BUNDLE.get())) return new Issue("bore_need_ties");
-            if (needsStone && !bore.supplies.getItem(TrainVehicle.STONE_SUPPLY).is(Items.COBBLESTONE)) {
+            int rails = bridge ? BRIDGE_RAILS_PER_BLOCK : RAILS_PER_BLOCK;
+            if (!inventory.supply(bore.supplies, TrainVehicle.RAIL_SUPPLY, gondolas, Trainmod.RAIL.get(), rails)) {
+                return new Issue("bore_need_rail", rails);
+            }
+            if (!inventory.supply(bore.supplies, TrainVehicle.TIE_SUPPLY, gondolas, Trainmod.TIE_BUNDLE.get(), 1)) {
+                return new Issue("bore_need_ties");
+            }
+            if (needsStone && !inventory.supply(bore.supplies, TrainVehicle.STONE_SUPPLY, gondolas, Items.COBBLESTONE, 1)) {
                 return new Issue("bore_need_stone");
             }
         }
@@ -121,14 +133,24 @@ final class TrackWork {
                 }
             }
         }
-        if (lay) changes.put(next, Trainmod.TRACK.get(TrackGeometry.Kind.UNBALLASTED_STRAIGHT).get().segment(rotation, true, 0));
-        List<ItemStack> drops = new ArrayList<>();
+        Set<BlockPos> cut = Set.copyOf(changes.keySet());
+        var logs = new LinkedHashSet<BlockPos>();
+        var cutLogs = changes.keySet().stream().filter(pos -> ConnectedLogs.isLog(level, pos)).toList();
+        BlockPos foundation = next.below();
+        if (!ConnectedLogs.follow(level, cutLogs, pos -> !pos.equals(foundation), logs)) return at("bore_too_many_logs", next);
+        logs.forEach(pos -> changes.putIfAbsent(pos, Blocks.AIR.defaultBlockState()));
+        if (lay) changes.put(next, Trainmod.TRACK.get(trackKind).get().segment(rotation, true, 0));
+        List<SimpleContainer> cargo = new ArrayList<>(gondolas);
+        cargo.add(bore.cargo);
+        cargo.add(bore.overflow);
+        ItemStack pickaxe = new ItemStack(Items.IRON_PICKAXE);
+        ItemStack axe = new ItemStack(Items.IRON_AXE);
         for (var entry : changes.entrySet()) {
             BlockPos cell = entry.getKey();
             if (!level.isInWorldBounds(cell)) return at("bore_world_limit", cell);
             if (!level.isLoaded(cell)) return at("bore_unloaded", cell);
             if (!level.mayInteract(driver, cell)) return at("bore_protected", cell);
-            if (cell.getY() >= next.getY()) {
+            if (cell.getY() >= next.getY() && cut.contains(cell)) {
                 Issue obstruction = faceObstruction(level, driver, bore, cell);
                 if (obstruction != null) return obstruction;
             }
@@ -137,56 +159,29 @@ final class TrackWork {
                 continue;
             }
             if (TrackBlock.broken(old) || old.is(Trainmod.BUFFER_STOP.get())) return new Issue("buffer_reached");
-            if (RailNetwork.isRail(old)) return at("bore_track_in_cut", cell);
+            if (RailNetwork.isRail(old) || logs.contains(cell) && ConnectedLogs.supportsTrack(level, cell)) {
+                return at("bore_track_in_cut", cell);
+            }
             if (old.hasBlockEntity()) return at("bore_block_entity", cell, old.getBlock().getName());
             if (old.getDestroySpeed(level, cell) < 0) return at("bore_unbreakable", cell, old.getBlock().getName());
-            if (NeoForge.EVENT_BUS.post(new BreakBlockEvent(level, cell, old, driver)).isCanceled()) {
+            if (!mayBreak(level, driver, cell, old)) {
                 return at("bore_protected", cell);
             }
-            drops.addAll(Block.getDrops(old, level, cell, null, driver, new ItemStack(Items.IRON_PICKAXE)));
-        }
-        List<SimpleContainer> cargo = new ArrayList<>();
-        trailing.forEach(car -> cargo.add(car.cargo));
-        cargo.add(bore.cargo);
-        cargo.add(bore.overflow);
-        List<SimpleContainer> stagedCargo = new ArrayList<>();
-        for (SimpleContainer inventory : cargo) {
-            SimpleContainer copy = new SimpleContainer(inventory.getContainerSize());
-            copyInventory(inventory, copy);
-            stagedCargo.add(copy);
-        }
-        for (ItemStack drop : drops) {
-            ItemStack remaining = drop;
-            for (SimpleContainer inventory : stagedCargo) {
-                remaining = inventory.addItem(remaining);
-                if (remaining.isEmpty()) {
-                    break;
-                }
-            }
-            if (!remaining.isEmpty()) {
-                return at("bore_full", next, drop.getHoverName());
+            for (ItemStack drop : Block.getDrops(old, level, cell, null, driver, logs.contains(cell) ? axe : pickaxe)) {
+                if (!inventory.collect(cargo, drop)) return at("bore_full", next, drop.getHoverName());
             }
         }
         if (!apply(level, driver, changes, existingRoadbed)) {
             return at("bore_place_denied", next);
         }
-        for (int i = 0; i < cargo.size(); i++) {
-            copyInventory(stagedCargo.get(i), cargo.get(i));
-        }
-        if (lay && usesSupplies) {
-            bore.supplies.removeItem(TrainVehicle.RAIL_SUPPLY, RAILS_PER_BLOCK);
-            bore.supplies.removeItem(TrainVehicle.TIE_SUPPLY, 1);
-        }
-        if (needsStone && usesSupplies) {
-            bore.supplies.removeItem(TrainVehicle.STONE_SUPPLY, 1);
-        }
+        inventory.commit();
         return null;
     }
 
     private static Issue faceObstruction(ServerLevel level, ServerPlayer driver, TrainVehicle bore, BlockPos cell) {
         AABB box = new AABB(cell);
-        var living = level.getEntitiesOfClass(LivingEntity.class, box, entity -> entity != driver);
-        if (!living.isEmpty()) return at("bore_entity", cell, living.getFirst().getDisplayName());
+        var players = level.getEntitiesOfClass(ServerPlayer.class, box, player -> player != driver && !player.isSpectator());
+        if (!players.isEmpty()) return at("bore_entity", cell, players.getFirst().getDisplayName());
         var cars = level.getEntitiesOfClass(TrainVehicle.class, box, car -> car != bore);
         if (!cars.isEmpty()) return at("bore_entity", cell, cars.getFirst().getDisplayName());
         var carts = level.getEntitiesOfClass(AbstractMinecart.class, box);
@@ -219,11 +214,17 @@ final class TrackWork {
         return true;
     }
 
-    static int ballast(ServerLevel level, ServerPlayer driver, BlockPos below, int portions, TrainVehicle.BallastMode mode) {
+    static int ballast(ServerLevel level, ServerPlayer driver, BlockPos below, int portions, TrainVehicle.BallastMode mode,
+                       List<SimpleContainer> cargo) {
+        return ballast(level, driver, below, portions, mode, cargo, ignored -> {});
+    }
+
+    static int ballast(ServerLevel level, ServerPlayer driver, BlockPos below, int portions, TrainVehicle.BallastMode mode,
+                       List<SimpleContainer> cargo, Consumer<BlockPos> blockedByLeaves) {
         BlockPos above = below.above();
         BlockState state = level.getBlockState(above);
         if (portions == 0 || !(state.getBlock() instanceof TrackBlock track) || TrackBlock.broken(state)
-            || track.kind == TrackGeometry.Kind.BRIDGE_STRAIGHT) return 0;
+            || track.kind == TrackGeometry.Kind.BRIDGE_STRAIGHT || bridgeFoundation(level.getBlockState(below))) return 0;
         RailNetwork.Rail rail = RailNetwork.railAt(level, above);
         if (rail == null) return 0;
         int used = 0;
@@ -242,21 +243,69 @@ final class TrackWork {
         int heading = RailwayBlocks.Ballast.heading((float) Math.toDegrees(Math.atan2(-tangent.x, tangent.z)));
         BlockState ballast = Trainmod.BALLAST.get().defaultBlockState().setValue(TrackBlock.ROTATION, heading);
         int crestWidth = mode == TrainVehicle.BallastMode.WIDE ? 1 : 0;
-        return used + BALLAST_PORTIONS * ballastRoadbed(level, driver, below, ballast, tangent, crestWidth, blocks);
+        return used + BALLAST_PORTIONS * ballastRoadbed(level, driver, below, ballast, tangent, crestWidth, blocks, cargo,
+            blockedByLeaves);
     }
 
-    private static boolean replaceRoadbed(ServerLevel level, ServerPlayer driver, BlockPos pos, BlockState ballast) {
+    private static boolean bridgeFoundation(BlockState state) {
+        return state.is(Blocks.STONE_BRICKS) || BridgeBlock.supportsRail(state);
+    }
+
+    private static boolean replaceRoadbed(ServerLevel level, ServerPlayer driver, BlockPos pos, BlockState ballast,
+                                          List<SimpleContainer> cargo) {
         if (!level.isLoaded(pos) || !level.mayInteract(driver, pos)) return false;
         BlockState old = level.getBlockState(pos);
-        if (old.isAir() ? !TrackBlock.supported(level, pos) : !ballastSoil(old) || !mayBreak(level, driver, pos, old)) {
+        boolean replacesSoil = ballastSoil(old);
+        if (workerInWay(level, pos)
+            || !replacesSoil && (!ballastOpen(level, pos, old) || !TrackBlock.supported(level, pos))) {
             return false;
         }
-        return apply(level, driver, Map.of(pos, ballast), level.getBlockState(pos.below()));
+        return layBallast(level, driver, pos, ballast, cargo, replacesSoil);
     }
 
-    private static boolean roadbedMaterial(BlockState state) {
-        return state.is(Blocks.SAND) || state.is(Blocks.GRAVEL) || state.is(Blocks.STONE)
-            || state.is(Blocks.COBBLESTONE) || state.is(Blocks.DIRT);
+    private static boolean layBallast(ServerLevel level, ServerPlayer actor, BlockPos pos, BlockState ballast,
+                                      List<SimpleContainer> cargo, boolean clearSurface) {
+        if (!clearSurface && level.getBlockState(pos).isAir()) {
+            return apply(level, actor, Map.of(pos, ballast), level.getBlockState(pos.below()));
+        }
+        Map<BlockPos, BlockState> changes = new LinkedHashMap<>();
+        changes.put(pos, ballast);
+        clearGroundCover(level, pos, changes);
+        if (clearSurface) clearGroundCover(level, pos.above(), changes);
+        var inventory = new WorkCargo();
+        for (BlockPos cell : changes.keySet()) {
+            BlockState old = level.getBlockState(cell);
+            if (old.isAir()) continue;
+            if (!mayBreak(level, actor, cell, old)) return false;
+            for (ItemStack drop : Block.getDrops(old, level, cell, null, actor, new ItemStack(Items.IRON_PICKAXE))) {
+                if (!inventory.collect(cargo, drop)) return false;
+            }
+        }
+        if (!apply(level, actor, changes, level.getBlockState(pos.below()))) return false;
+        inventory.commit();
+        return true;
+    }
+
+    private static void clearGroundCover(ServerLevel level, BlockPos pos, Map<BlockPos, BlockState> changes) {
+        BlockState state = level.getBlockState(pos);
+        if (!ballastGroundCover(level, pos, state)) return;
+        changes.putIfAbsent(pos, Blocks.AIR.defaultBlockState());
+        if (state.getBlock() instanceof DoublePlantBlock) {
+            DoubleBlockHalf half = state.getValue(DoublePlantBlock.HALF);
+            BlockPos other = half == DoubleBlockHalf.LOWER ? pos.above() : pos.below();
+            BlockState otherState = level.getBlockState(other);
+            if (otherState.is(state.getBlock()) && otherState.getValue(DoublePlantBlock.HALF) != half
+                && ballastGroundCover(level, other, otherState)) changes.putIfAbsent(other, Blocks.AIR.defaultBlockState());
+        }
+    }
+
+    private static boolean ballastGroundCover(ServerLevel level, BlockPos pos, BlockState state) {
+        return state.getBlock() instanceof VegetationBlock && !state.hasBlockEntity() && state.getFluidState().isEmpty()
+            && state.getCollisionShape(level, pos).isEmpty();
+    }
+
+    private static boolean ballastOpen(ServerLevel level, BlockPos pos, BlockState state) {
+        return state.isAir() || ballastGroundCover(level, pos, state);
     }
 
     private static boolean ballastSoil(BlockState state) {
@@ -268,8 +317,10 @@ final class TrackWork {
     }
 
     private static int ballastRoadbed(ServerLevel level, ServerPlayer actor, BlockPos center, BlockState material,
-                                      Vec3 tangent, int crestWidth, int limit) {
-        int placed = replaceRoadbed(level, actor, center, material) ? 1 : 0;
+                                      Vec3 tangent, int crestWidth, int limit, List<SimpleContainer> cargo,
+                                      Consumer<BlockPos> blockedByLeaves) {
+        if (level.getBlockState(center).is(BlockTags.LEAVES)) blockedByLeaves.accept(center);
+        int placed = replaceRoadbed(level, actor, center, material, cargo) ? 1 : 0;
         if (placed == limit || !level.getBlockState(center).is(Trainmod.BALLAST.get()) || !level.mayInteract(actor, center)) {
             return placed;
         }
@@ -280,29 +331,32 @@ final class TrackWork {
         Set<BlockPos> reached = new HashSet<>();
         reached.add(center);
         var pendingCrest = new ArrayList<BlockPos>(2);
-        placed += formCrest(level, actor, center, material, dx, dz, diagonal, crestWidth, reached, pendingCrest, limit - placed);
+        placed += formCrest(level, actor, center, material, dx, dz, diagonal, crestWidth, reached,
+            pendingCrest, limit - placed, cargo, blockedByLeaves);
         if (placed == limit) return placed;
         var layers = new ArrayList<List<BlockPos>>();
         for (int depth = 1; depth <= BALLAST_DEPTH; depth++) {
-            layers.add(traceBallastLayer(level, actor, center.below(depth), dx, dz, diagonal, depth, crestWidth, reached));
+            layers.add(traceBallastLayer(level, actor, center.below(depth), dx, dz, diagonal, depth, crestWidth, reached,
+                blockedByLeaves));
         }
 
         // Settle from the lowest reachable layer up so each block has something to rest on.
         for (var layer : layers.reversed()) {
             for (BlockPos pos : layer) {
                 if (placed == limit) return placed;
-                if (placeShoulder(level, actor, pos, material)) placed++;
+                if (placeShoulder(level, actor, pos, material, cargo)) placed++;
             }
         }
         for (BlockPos shoulder : pendingCrest) {
             if (placed == limit) break;
-            if (placeShoulder(level, actor, shoulder, material)) placed++;
+            if (placeShoulder(level, actor, shoulder, material, cargo)) placed++;
         }
         return placed;
     }
 
     private static int formCrest(ServerLevel level, ServerPlayer actor, BlockPos center, BlockState material, int dx, int dz,
-                                 boolean diagonal, int width, Set<BlockPos> reached, List<BlockPos> pending, int limit) {
+                                 boolean diagonal, int width, Set<BlockPos> reached, List<BlockPos> pending, int limit,
+                                 List<SimpleContainer> cargo, Consumer<BlockPos> blockedByLeaves) {
         int stepsPerBlock = diagonal ? 2 : 1;
         int edge = width * stepsPerBlock;
         int placed = 0;
@@ -312,16 +366,21 @@ final class TrackWork {
                 if (step <= edge) {
                     if (!canWorkAt(level, actor, pos) || RailNetwork.isRail(level.getBlockState(pos.above()))) break;
                     BlockState state = level.getBlockState(pos);
+                    if (state.is(BlockTags.LEAVES)) blockedByLeaves.accept(pos);
+                    BlockPos abovePos = pos.above();
+                    BlockState above = level.getBlockState(abovePos);
+                    boolean open = ballastOpen(level, pos, state);
+                    if (ballastSoil(state) && above.is(BlockTags.LEAVES)) blockedByLeaves.accept(pos.above());
                     BlockPos outward = slopeCell(center, dx, dz, (step + 1) * side, diagonal);
-                    if (!state.isAir() && !state.is(Trainmod.BALLAST.get())
-                        && (!ballastSoil(state) || !level.getBlockState(pos.above()).isAir()
+                    if (!open && !state.is(Trainmod.BALLAST.get())
+                        && (!ballastSoil(state) || !ballastOpen(level, abovePos, above)
                             || !level.isLoaded(outward) || retainingWall(level, pos, outward))) break;
                     if (step == edge && !state.is(Trainmod.BALLAST.get())) {
-                        if (placed < limit && replaceRoadbed(level, actor, pos, material)) placed++;
-                        else if (state.isAir()) pending.add(pos);
+                        if (placed < limit && replaceRoadbed(level, actor, pos, material, cargo)) placed++;
+                        else if (open) pending.add(pos);
                         else break;
                     }
-                } else if (!ballastCanReach(level, actor, pos)) break;
+                } else if (!ballastCanReach(level, actor, pos, blockedByLeaves)) break;
                 reached.add(pos);
             }
         }
@@ -329,9 +388,10 @@ final class TrackWork {
     }
 
     private static List<BlockPos> traceBallastLayer(ServerLevel level, ServerPlayer actor, BlockPos center, int dx, int dz,
-                                                     boolean diagonal, int depth, int crestWidth, Set<BlockPos> reached) {
+                                                     boolean diagonal, int depth, int crestWidth, Set<BlockPos> reached,
+                                                     Consumer<BlockPos> blockedByLeaves) {
         var layer = new ArrayList<BlockPos>();
-        if (reached.contains(center.above()) && ballastCanReach(level, actor, center)) {
+        if (reached.contains(center.above()) && ballastCanReach(level, actor, center, blockedByLeaves)) {
             reached.add(center);
             layer.add(center);
         }
@@ -345,7 +405,7 @@ final class TrackWork {
                 BlockPos pos = slopeCell(center, dx, dz, step * side, diagonal);
                 BlockPos inward = slopeCell(center, dx, dz, (step - 1) * side, diagonal);
                 if ((reached.contains(pos.above()) || reached.contains(inward))
-                    && ballastCanReach(level, actor, pos)) {
+                    && ballastCanReach(level, actor, pos, blockedByLeaves)) {
                     reached.add(pos);
                     if (step <= settleSteps) layer.add(pos);
                 }
@@ -365,10 +425,11 @@ final class TrackWork {
         return level.isInsideBuildHeight(pos) && level.isLoaded(pos) && level.mayInteract(actor, pos);
     }
 
-    private static boolean ballastCanReach(ServerLevel level, ServerPlayer actor, BlockPos pos) {
+    private static boolean ballastCanReach(ServerLevel level, ServerPlayer actor, BlockPos pos, Consumer<BlockPos> blockedByLeaves) {
         if (!canWorkAt(level, actor, pos)) return false;
         BlockState state = level.getBlockState(pos);
-        return state.isAir() || state.is(Trainmod.BALLAST.get());
+        if (state.is(BlockTags.LEAVES)) blockedByLeaves.accept(pos);
+        return ballastOpen(level, pos, state) || state.is(Trainmod.BALLAST.get());
     }
 
     private static boolean retainingWall(ServerLevel level, BlockPos shoulder, BlockPos outward) {
@@ -378,13 +439,18 @@ final class TrackWork {
             && TrackBlock.supported(level, shoulder) && TrackBlock.supported(level, shoulder.below());
     }
 
-    private static boolean placeShoulder(ServerLevel level, ServerPlayer actor, BlockPos pos, BlockState material) {
-        if (!canWorkAt(level, actor, pos)
-            || !level.getBlockState(pos).isAir() || RailNetwork.isRail(level.getBlockState(pos.above()))) return false;
+    private static boolean placeShoulder(ServerLevel level, ServerPlayer actor, BlockPos pos, BlockState material,
+                                         List<SimpleContainer> cargo) {
+        if (!canWorkAt(level, actor, pos) || !ballastOpen(level, pos, level.getBlockState(pos))
+            || RailNetwork.isRail(level.getBlockState(pos.above())) || workerInWay(level, pos)) return false;
         BlockState ground = level.getBlockState(pos.below());
         return ground.isFaceSturdy(level, pos.below(), net.minecraft.core.Direction.UP)
             && level.isUnobstructed(material, pos, net.minecraft.world.phys.shapes.CollisionContext.empty())
-            && apply(level, actor, Map.of(pos, material), ground);
+            && layBallast(level, actor, pos, material, cargo, false);
+    }
+
+    private static boolean workerInWay(ServerLevel level, BlockPos pos) {
+        return !level.getEntitiesOfClass(TreecuttersWorker.class, new AABB(pos), TreecuttersWorker::isAlive).isEmpty();
     }
 
     static boolean apply(ServerLevel level, ServerPlayer actor, Map<BlockPos, BlockState> changes, BlockState against) {
@@ -454,12 +520,5 @@ final class TrackWork {
         for (BlockSnapshot snapshot : snapshots.reversed()) {
             snapshot.restore(flags);
         }
-    }
-
-    private static void copyInventory(SimpleContainer from, SimpleContainer to) {
-        for (int slot = 0; slot < from.getContainerSize(); slot++) {
-            to.getItems().set(slot, from.getItem(slot).copy());
-        }
-        to.setChanged();
     }
 }

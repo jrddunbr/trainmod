@@ -39,6 +39,9 @@ public final class Trainmod {
     static final Map<TrainVehicle.Kind, DeferredHolder<EntityType<?>, EntityType<TrainVehicle>>> VEHICLES =
         new EnumMap<>(TrainVehicle.Kind.class);
     static final Map<TrainVehicle.Kind, DeferredItem<VehicleItem>> VEHICLE_ITEMS = new EnumMap<>(TrainVehicle.Kind.class);
+    static final DeferredHolder<EntityType<?>, EntityType<TreecuttersWorker>> TREECUTTERS_WORKER =
+        ENTITIES.registerEntityType("treecutters_worker", TreecuttersWorker::new, MobCategory.MISC,
+            builder -> builder.sized(0.6f, 1.95f).eyeHeight(1.62f).clientTrackingRange(10).noSave());
     static final DeferredHolder<net.minecraft.world.level.block.entity.BlockEntityType<?>,
         net.minecraft.world.level.block.entity.BlockEntityType<SwitchPoints>> SWITCH_POINTS =
         BLOCK_ENTITIES.register("switch_points", () -> new net.minecraft.world.level.block.entity.BlockEntityType<>(
@@ -177,6 +180,8 @@ public final class Trainmod {
         bus.addListener(TrainControls::register);
         bus.addListener(BoreTickets::register);
         bus.addListener(RailExtruder::registerCapabilities);
+        bus.addListener((net.neoforged.neoforge.event.entity.EntityAttributeCreationEvent event) ->
+            event.put(TREECUTTERS_WORKER.get(), TreecuttersWorker.createAttributes().build()));
         SOUNDS.register(bus);
         BLOCKS.register(bus);
         ITEMS.register(bus);

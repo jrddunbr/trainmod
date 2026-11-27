@@ -2,6 +2,8 @@ package org.ja4.trainmod;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -26,6 +28,8 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.vehicle.VehicleEntity;
 import net.minecraft.world.entity.vehicle.minecart.AbstractMinecart;
 import net.minecraft.world.inventory.ChestMenu;
+import net.minecraft.world.inventory.ContainerLevelAccess;
+import net.minecraft.world.inventory.CraftingMenu;
 import net.minecraft.world.inventory.MenuType;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.Item;
@@ -36,6 +40,8 @@ import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.level.storage.ValueOutput;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.common.util.FakePlayer;
+import net.neoforged.neoforge.common.util.FakePlayerFactory;
 
 final class TrainVehicle extends VehicleEntity {
     enum Kind {
@@ -47,7 +53,8 @@ final class TrainVehicle extends VehicleEntity {
         BALLAST_CAR(0.8125f, 2.85f, 0.875f, false),
         STEAM_LOCOMOTIVE(1.43f, 3.65f, 0.90f, true),
         TENDER(1.05f, 2.45f, 0.90f, false),
-        ELECTRIC_SHUNTER(1.30f, 2.35f, 0.90f, true);
+        ELECTRIC_SHUNTER(1.30f, 2.35f, 0.90f, true),
+        TREECUTTERS_PASSENGER_CAR(2.45f, 1.90f, 0.95f, false);
 
         final float height;
         final float length;
@@ -106,6 +113,8 @@ final class TrainVehicle extends VehicleEntity {
         new java.util.concurrent.atomic.AtomicLong();
     private static final double ONE_MPH = 0.44704 / 20;
     private static final double COUPLING_NOTICE_RADIUS = 16;
+    private static final int BALLAST_RECHECK_DISTANCE = 32;
+    private static final int BALLAST_RECHECK_BATCH = 4;
 
     static final int RAIL_SUPPLY = 0;
     static final int TIE_SUPPLY = 1;
@@ -133,6 +142,9 @@ final class TrainVehicle extends VehicleEntity {
         net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
             net.minecraft.network.syncher.EntityDataSerializers.INT);
     private static final net.minecraft.network.syncher.EntityDataAccessor<Boolean> HANDBRAKE =
+        net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
+            net.minecraft.network.syncher.EntityDataSerializers.BOOLEAN);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Boolean> TREECUTTERS_LANTERN =
         net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
             net.minecraft.network.syncher.EntityDataSerializers.BOOLEAN);
     private static final net.minecraft.network.syncher.EntityDataAccessor<Float> WHEEL_PHASE =
@@ -165,6 +177,7 @@ final class TrainVehicle extends VehicleEntity {
         builder.define(CARGO_LOAD, 0);
         builder.define(DOORS, 0);
         builder.define(HANDBRAKE, false);
+        builder.define(TREECUTTERS_LANTERN, false);
         builder.define(WHEEL_PHASE, 0f);
         builder.define(BORE_TIRES, 0f);
         builder.define(HEADLIGHT, 0);
@@ -202,6 +215,8 @@ final class TrainVehicle extends VehicleEntity {
     private boolean working;
     private BallastMode ballastMode = BallastMode.NARROW;
     private int ballastRemainder;
+    private final LinkedHashMap<BlockPos, UUID> recentBallast;
+    private final LinkedHashSet<BlockPos> ballastLeafRequests;
     private boolean previousJump;
     private long boardingOrder;
     private long lastAudioTick = Long.MIN_VALUE;
@@ -210,6 +225,7 @@ final class TrainVehicle extends VehicleEntity {
     private byte controlKeys;
     private int lastControlTick = -100;
     private final VehicleFuel fuel = new VehicleFuel();
+    private final TreecuttersCrew treecuttersCrew;
     private UUID controlRider;
     private UUID activeDriver;
     private UUID activeStand;
@@ -222,6 +238,9 @@ final class TrainVehicle extends VehicleEntity {
         cargo = inventory(kind == Kind.TUNNEL_BORE ? 54 : kind.freight() || kind == Kind.BALLAST_CAR ? 27 : 0);
         overflow = inventory(kind == Kind.TUNNEL_BORE ? 54 : 0);
         supplies = inventory(kind == Kind.TUNNEL_BORE || kind == Kind.TENDER || kind == Kind.LOCOMOTIVE ? 9 : 0);
+        treecuttersCrew = kind == Kind.TREECUTTERS_PASSENGER_CAR ? new TreecuttersCrew() : null;
+        recentBallast = kind == Kind.BALLAST_CAR ? new LinkedHashMap<>() : null;
+        ballastLeafRequests = kind == Kind.BALLAST_CAR ? new LinkedHashSet<>() : null;
     }
 
     float wheelPhase(float partial) {
@@ -229,6 +248,13 @@ final class TrainVehicle extends VehicleEntity {
     }
 
     int headlight() { return entityData.get(HEADLIGHT); }
+
+    boolean treecuttersActive() { return entityData.get(TREECUTTERS_LANTERN); }
+
+    private void setTreecuttersActive(boolean active) {
+        entityData.set(TREECUTTERS_LANTERN, active);
+        if (!active) treecuttersCrew.reset();
+    }
 
     boolean hornActive() { return (entityData.get(AUDIO) & TrainControls.HORN) != 0; }
 
@@ -329,6 +355,7 @@ final class TrainVehicle extends VehicleEntity {
 
     @Override
     protected boolean canAddPassenger(Entity passenger) {
+        if (treecuttersCrew != null) return passenger instanceof TreecuttersWorker && getPassengers().isEmpty();
         return passenger instanceof Player && (hasDriverSeat() && getPassengers().isEmpty()
             || kind.passengerCar() && getPassengers().size() < 2);
     }
@@ -390,8 +417,24 @@ final class TrainVehicle extends VehicleEntity {
         return switch (kind) {
             case LOCOMOTIVE, ELECTRIC_SHUNTER -> new Vec3(0, 0.55, 0);
             case TENDER -> new Vec3(0, 1.0, 0).add(facing().scale(-0.24));
+            case TREECUTTERS_PASSENGER_CAR -> new Vec3(0, 0.37, 0);
             default -> facing().scale(-0.65).add(0, 0.68, 0);
         };
+    }
+
+    @Override
+    public Vec3 getDismountLocationForPassenger(LivingEntity passenger) {
+        if (treecuttersCrew != null && passenger instanceof TreecuttersWorker) {
+            Vec3 side = SwitchLayout.lateral(facing()).scale((kind.width + passenger.getBbWidth()) / 2 + 0.25);
+            for (Vec3 offset : List.of(side, side.reverse())) {
+                Vec3 at = position().add(offset);
+                if (level().isLoaded(BlockPos.containing(at))
+                    && level().noCollision(passenger, passenger.getBoundingBox().move(at.subtract(passenger.position())))) {
+                    return at;
+                }
+            }
+        }
+        return super.getDismountLocationForPassenger(passenger);
     }
 
     @Override
@@ -468,6 +511,18 @@ final class TrainVehicle extends VehicleEntity {
             if (!player.startRiding(this)) player.setShiftKeyDown(true);
         } else if (control == VehicleHitboxes.Component.LEFT_DOOR || control == VehicleHitboxes.Component.RIGHT_DOOR) {
             entityData.set(DOORS, entityData.get(DOORS) ^ (control == VehicleHitboxes.Component.LEFT_DOOR ? 1 : 2));
+        } else if (control == VehicleHitboxes.Component.TREECUTTERS_LANTERN) {
+            boolean active = !treecuttersActive();
+            setTreecuttersActive(active);
+            message(player, active ? "treecutters_on" : "treecutters_off");
+        } else if (control == VehicleHitboxes.Component.CRAFTING_TABLE) {
+            player.openMenu(new SimpleMenuProvider((id, inv, ignored) -> new CraftingMenu(id, inv,
+                ContainerLevelAccess.create(level, blockPosition())) {
+                @Override
+                public boolean stillValid(Player player) {
+                    return isAlive() && player.level() == level && player.distanceToSqr(TrainVehicle.this) <= 64;
+                }
+            }, Component.translatable("container.crafting")));
         } else if (control == VehicleHitboxes.Component.HANDBRAKE) {
             boolean set = !handbrakeApplied();
             entityData.set(HANDBRAKE, set);
@@ -565,12 +620,21 @@ final class TrainVehicle extends VehicleEntity {
             } else {
                 roll(level);
             }
+            if (treecuttersActive()) tickTreecutters(level);
+            if (kind == Kind.BALLAST_CAR && working && ((tickCount + getId()) & 3) == 0) recheckBallast(level);
         }
         if (speed == 0 && railRoot != null && (tickCount & 7) == 0) {
             var rail = cursor();
             refreshBank(rail);
             if (kind == Kind.TUNNEL_BORE && rail != null) refreshBoreTires(rail);
         }
+    }
+
+    private void tickTreecutters(ServerLevel level) {
+        List<Member> train = consist(level);
+        Engineer engineer = train == null ? null : selectEngineer(level, train);
+        var actor = engineer == null ? net.neoforged.neoforge.common.util.FakePlayerFactory.getMinecraft(level) : engineer.rider;
+        treecuttersCrew.tick(level, this, actor);
     }
 
     @Override
@@ -767,7 +831,8 @@ final class TrainVehicle extends VehicleEntity {
             return;
         }
         if (kind == Kind.TUNNEL_BORE && working && speed > 0) {
-            var issue = TrackWork.extendIfNeeded(level, driver, this, start, speed, trailingFreight(level));
+            var issue = TrackWork.extendIfNeeded(level, driver, this, start, speed,
+                trailingConsist(level).stream().filter(car -> car.kind == Kind.GONDOLA).toList());
             if (issue != null) {
                 stop(driver, issue.message());
                 return;
@@ -881,14 +946,6 @@ final class TrainVehicle extends VehicleEntity {
                 BlockPos.containing(targets.get(blocked).point()).toShortString()));
             return false;
         }
-        for (int i = 0; i < consist.size(); i++) {
-            TrainVehicle vehicle = consist.get(i).vehicle;
-            RailNetwork.Position next = targets.get(i);
-            if (vehicle.kind == Kind.TUNNEL_BORE && BoreDrive.tireExtension(level, next) < 0) {
-                stop(driver, "bore_no_ground");
-                return false;
-            }
-        }
         if (wearTrack(level, driver, consist, current, travel)) {
             stop(driver, "broken_track");
             return false;
@@ -897,23 +954,24 @@ final class TrainVehicle extends VehicleEntity {
             TrainVehicle vehicle = consist.get(i).vehicle;
             RailNetwork.Position next = targets.get(i);
             var before = vehicle.kind == Kind.BALLAST_CAR && vehicle.working ? vehicle.cursor() : null;
+            double movement = travel * consist.get(i).movement;
+            if (vehicle.kind == Kind.TUNNEL_BORE) BoreDrive.pushMobs(level, vehicle, next, movement);
             vehicle.moveToRail(next);
             vehicle.lastMoveTick = level.getGameTime();
             vehicle.lastMoveLeader = getUUID();
-            double movement = travel * consist.get(i).movement;
             if (vehicle.kind == Kind.STEAM_LOCOMOTIVE) vehicle.turnWheels(level, movement, steaming.contains(vehicle));
             if (vehicle.kind == Kind.LOCOMOTIVE) vehicle.entityData.set(HEADLIGHT, (int) Math.signum(movement));
             if (before != null) {
-                var operator = driver != null ? driver : net.neoforged.neoforge.common.util.FakePlayerFactory.getMinecraft(level);
+                var operator = driver != null ? driver : FakePlayerFactory.getMinecraft(level);
                 Set<BlockPos> worked = new HashSet<>();
                 BlockPos track = before.trackCell();
-                if (track != null && worked.add(track)) vehicle.regulate(level, operator, track.below());
+                if (track != null && worked.add(track)) vehicle.regulatePassedTrack(level, operator, track);
                 RailNetwork.crossesNewCell(level, before, movement, cell -> {
-                    if (worked.add(cell)) vehicle.regulate(level, operator, cell.below());
+                    if (worked.add(cell)) vehicle.regulatePassedTrack(level, operator, cell);
                     return false;
                 });
                 track = next.trackCell();
-                if (track != null && worked.add(track)) vehicle.regulate(level, operator, track.below());
+                if (track != null && worked.add(track)) vehicle.regulatePassedTrack(level, operator, track);
             }
         }
         if (reachedEnd) stop(driver, endMessage);
@@ -990,17 +1048,62 @@ final class TrainVehicle extends VehicleEntity {
 
     int ballastRemainder() { return ballastRemainder; }
 
-    void cycleBallastMode() { ballastMode = ballastMode.next(); }
+    void cycleBallastMode() {
+        ballastMode = ballastMode.next();
+        ballastLeafRequests.clear();
+    }
+
+    List<BlockPos> ballastLeaves(ServerLevel level) {
+        if (kind != Kind.BALLAST_CAR || !working || ballastMode == BallastMode.TRACK_ONLY) return List.of();
+        ballastLeafRequests.removeIf(pos -> distanceToSqr(Vec3.atCenterOf(pos)) > 38 * 38
+            || level.isLoaded(pos) && !level.getBlockState(pos).is(net.minecraft.tags.BlockTags.LEAVES));
+        return ballastLeafRequests.stream().filter(level::isLoaded).toList();
+    }
+
+    boolean needsBallastLeaf(BlockPos pos) {
+        return kind == Kind.BALLAST_CAR && working && ballastMode != BallastMode.TRACK_ONLY
+            && distanceToSqr(Vec3.atCenterOf(pos)) <= 38 * 38 && ballastLeafRequests.contains(pos);
+    }
+
+    private void requestBallastLeaf(BlockPos pos) {
+        ballastLeafRequests.addLast(pos.immutable());
+        if (ballastLeafRequests.size() > 512) ballastLeafRequests.removeFirst();
+    }
 
     private int ballastPortions() {
         return ballastRemainder + TrackWork.BALLAST_PORTIONS * cargo.getItems().stream()
             .filter(TrainVehicle::ballastSupply).mapToInt(ItemStack::getCount).sum();
     }
 
+    private void regulatePassedTrack(ServerLevel level, ServerPlayer operator, BlockPos track) {
+        if (ballastMode != BallastMode.TRACK_ONLY) {
+            recentBallast.putLast(track.immutable(), operator instanceof FakePlayer ? null : operator.getUUID());
+            if (recentBallast.size() > BALLAST_RECHECK_DISTANCE) recentBallast.pollFirstEntry();
+        }
+        regulate(level, operator, track.below());
+    }
+
+    private void recheckBallast(ServerLevel level) {
+        if (recentBallast.isEmpty() || ballastMode == BallastMode.TRACK_ONLY || ballastPortions() < TrackWork.BALLAST_PORTIONS) return;
+        // Revisit the same slope after a tree or another obstruction has been removed.
+        int checks = Math.min(BALLAST_RECHECK_BATCH, recentBallast.size());
+        for (int i = 0; i < checks; i++) {
+            var pass = recentBallast.pollFirstEntry();
+            BlockPos track = pass.getKey();
+            if (distanceToSqr(Vec3.atCenterOf(track)) > BALLAST_RECHECK_DISTANCE * BALLAST_RECHECK_DISTANCE) continue;
+            UUID operatorId = pass.getValue();
+            recentBallast.putLast(track, operatorId);
+            if (!level.isLoaded(track)) continue;
+            ServerPlayer operator = operatorId == null ? FakePlayerFactory.getMinecraft(level)
+                : level.getPlayerByUUID(operatorId) instanceof ServerPlayer player ? player : null;
+            if (operator != null && !operator.isSpectator()) regulate(level, operator, track.below());
+        }
+    }
+
     void regulate(ServerLevel level, ServerPlayer driver, BlockPos under) {
         int available = ballastPortions();
         if (available == 0) return;
-        int used = TrackWork.ballast(level, driver, under, available, ballastMode);
+        int used = TrackWork.ballast(level, driver, under, available, ballastMode, workCargo(level), this::requestBallastLeaf);
         if (used == 0) return;
         int blocks = Math.ceilDiv(used - ballastRemainder, TrackWork.BALLAST_PORTIONS);
         ballastRemainder += blocks * TrackWork.BALLAST_PORTIONS - used;
@@ -1115,7 +1218,7 @@ final class TrainVehicle extends VehicleEntity {
     }
 
     private void refreshBoreTires(RailNetwork.Position position) {
-        entityData.set(BORE_TIRES, (float) Math.max(0, BoreDrive.tireExtension(level(), position)));
+        entityData.set(BORE_TIRES, (float) BoreDrive.tireExtension(level(), position));
     }
 
     private void refreshBank(RailNetwork.Position position) {
@@ -1259,26 +1362,52 @@ final class TrainVehicle extends VehicleEntity {
             ? new RailNetwork.Position(position.rail(), position.distance(), -position.forward()) : position;
     }
 
-    private List<TrainVehicle> trailingFreight(ServerLevel level) {
-        return trailingConsist(level).stream().filter(car -> car.kind.freight()).toList();
+    List<TrainVehicle> trailingConsist(ServerLevel level) {
+        return coupledCars(level, 1);
     }
 
-    List<TrainVehicle> trailingConsist(ServerLevel level) {
+    List<TrainVehicle> loadedTrain(ServerLevel level) {
+        var cars = new ArrayList<TrainVehicle>();
+        cars.add(this);
+        cars.addAll(coupledCars(level, 0));
+        cars.addAll(coupledCars(level, 1));
+        return cars;
+    }
+
+    TreecuttersCrew activeTreecuttersCrew() { return isAlive() && treecuttersActive() ? treecuttersCrew : null; }
+
+    private List<TrainVehicle> coupledCars(ServerLevel level, int end) {
         List<TrainVehicle> cars = new ArrayList<>();
         TrainVehicle current = this;
-        int rear = 1;
-        for (int i = 0; i < 23 && current.links[rear] != null; i++) {
-            if (!(level.getEntity(current.links[rear]) instanceof TrainVehicle next)) {
+        for (int i = 0; i < 23 && current.links[end] != null; i++) {
+            if (!(level.getEntity(current.links[end]) instanceof TrainVehicle next)) {
                 break;
             }
-            rear = 1 - next.linkedEnd(current.getUUID());
-            if (rear > 1) {
+            end = 1 - next.linkedEnd(current.getUUID());
+            if (end > 1 || next == this) {
                 break;
             }
             cars.add(next);
             current = next;
         }
         return cars;
+    }
+
+    List<SimpleContainer> workCargo(ServerLevel level) {
+        var inventories = new ArrayList<SimpleContainer>();
+        inventories.add(cargo);
+        inventories.addAll(connectedGondolaCargo(level));
+        return inventories;
+    }
+
+    List<SimpleContainer> connectedGondolaCargo(ServerLevel level) {
+        var inventories = new ArrayList<SimpleContainer>();
+        for (int end = 0; end < 2; end++) {
+            for (var car : coupledCars(level, end)) {
+                if (car.kind == Kind.GONDOLA) inventories.add(car.cargo);
+            }
+        }
+        return inventories;
     }
 
     private int linkedEnd(UUID target) {
@@ -1444,6 +1573,7 @@ final class TrainVehicle extends VehicleEntity {
     @Override
     public void onRemoval(RemovalReason reason) {
         super.onRemoval(reason);
+        if (treecuttersCrew != null) treecuttersCrew.discardWorker();
         if (kind == Kind.TUNNEL_BORE && level() instanceof ServerLevel server
             && (reason.shouldDestroy() || reason == RemovalReason.CHANGED_DIMENSION)) {
             BoreTickets.release(server, getUUID());
@@ -1491,6 +1621,7 @@ final class TrainVehicle extends VehicleEntity {
         links[0] = input.read("Front", UUIDUtil.CODEC).orElse(null);
         links[1] = input.read("Rear", UUIDUtil.CODEC).orElse(null);
         working = input.getBooleanOr("Working", false);
+        if (treecuttersCrew != null) setTreecuttersActive(working);
         if (kind == Kind.BALLAST_CAR) {
             int legacyMode = input.getBooleanOr("WideBallast", false) ? BallastMode.WIDE.ordinal() : BallastMode.NARROW.ordinal();
             ballastMode = BallastMode.byId(input.getIntOr("BallastMode", legacyMode));
@@ -1519,7 +1650,7 @@ final class TrainVehicle extends VehicleEntity {
         if (links[1] != null) {
             output.store("Rear", UUIDUtil.CODEC, links[1]);
         }
-        output.putBoolean("Working", working);
+        output.putBoolean("Working", treecuttersCrew != null ? treecuttersActive() : working);
         if (kind == Kind.BALLAST_CAR) {
             output.putInt("BallastMode", ballastMode.ordinal());
             output.putInt("BallastRemainder", ballastRemainder);

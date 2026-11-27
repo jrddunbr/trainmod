@@ -43,7 +43,7 @@ final class VehicleItem extends Item {
         TrainVehicle vehicle = new TrainVehicle(Trainmod.VEHICLES.get(kind).get(), level, kind);
         if (kind == TrainVehicle.Kind.TUNNEL_BORE) {
             position = BoreDrive.placement(level, position);
-            if (position == null || BoreDrive.tireExtension(level, position) < 0) {
+            if (position == null) {
                 context.getPlayer().sendOverlayMessage(Component.translatable("message.trainmod.bore_support"));
                 return InteractionResult.FAIL;
             }

@@ -9,7 +9,7 @@ import org.jspecify.annotations.Nullable;
 
 final class VehicleHitboxes {
     enum Component {
-        FRONT_COUPLER, REAR_COUPLER, HANDBRAKE, LEFT_DOOR, RIGHT_DOOR, TENDER_SEAT;
+        FRONT_COUPLER, REAR_COUPLER, HANDBRAKE, LEFT_DOOR, RIGHT_DOOR, TENDER_SEAT, TREECUTTERS_LANTERN, CRAFTING_TABLE;
 
         int couplerEnd() { return this == FRONT_COUPLER ? 0 : this == REAR_COUPLER ? 1 : -1; }
     }
@@ -66,6 +66,12 @@ final class VehicleHitboxes {
                 controls.add(door(kind, true));
                 controls.add(door(kind, false));
             }
+            if (kind == TrainVehicle.Kind.TREECUTTERS_PASSENGER_CAR) {
+                controls.add(control(Component.TREECUTTERS_LANTERN, VehicleModels.treecuttersLantern(kind, false)));
+                Vec3 corner = VehicleModels.CRAFTING_TABLE_CORNER;
+                double size = VehicleModels.CRAFTING_TABLE_SIZE;
+                controls.add(new Target(Component.CRAFTING_TABLE, new AABB(corner, corner.add(size, size, size)).inflate(0.035)));
+            }
             SHAPES.put(kind, new Shape(List.copyOf(body), envelope, List.copyOf(controls)));
         }
     }
@@ -95,9 +101,12 @@ final class VehicleHitboxes {
     }
 
     private static Target door(TrainVehicle.Kind kind, boolean left) {
-        AABB box = VehicleModels.doors(kind, left).stream().map(VehicleHitboxes::bounds)
-            .reduce(AABB::minmax).orElseThrow().inflate(0.035);
-        return new Target(left ? Component.LEFT_DOOR : Component.RIGHT_DOOR, box);
+        return control(left ? Component.LEFT_DOOR : Component.RIGHT_DOOR, VehicleModels.doors(kind, left));
+    }
+
+    private static Target control(Component component, List<VehicleModels.Box> boxes) {
+        AABB box = boxes.stream().map(VehicleHitboxes::bounds).reduce(AABB::minmax).orElseThrow().inflate(0.035);
+        return new Target(component, box);
     }
 
     static AABB bounds(TrainVehicle car, Target target, float partial) {

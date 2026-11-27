@@ -16,6 +16,10 @@ final class TrackMaterials {
 
     private TrackMaterials() {}
 
+    static int railsFor(TrackGeometry.Kind kind) {
+        return (int) ingredients(kind).stream().filter(RAIL::equals).count();
+    }
+
     static List<String> salvage(TrackGeometry.Kind kind) {
         return kind == TrackGeometry.Kind.STRAIGHT || kind == TrackGeometry.Kind.DIAGONAL
             ? List.of("trainmod:track_scrap") : ingredients(kind);

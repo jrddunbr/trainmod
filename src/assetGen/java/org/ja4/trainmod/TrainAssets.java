@@ -726,6 +726,8 @@ public final class TrainAssets {
         recipe("tunnel_bore", 1, List.of("IBI", "PHP", "MLM"), Map.of("I", "iron_block", "B", "diamond_pickaxe",
             "P", "piston", "H", "hopper", "M", "minecart", "L", "trainmod:locomotive"));
         recipe("ballast_car", 1, List.of(" H ", "PFP"), Map.of("H", "hopper", "P", "piston", "F", "trainmod:flatcar"));
+        recipe("treecutters_passenger_car", 1, List.of("PPP", "F F", " C "),
+            Map.of("P", "spruce_planks", "F", "spruce_fence", "C", "trainmod:flatcar"));
     }
 
     private void trackRecipes() throws IOException {

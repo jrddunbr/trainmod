@@ -15,8 +15,10 @@ import net.minecraft.client.model.geom.builders.CubeListBuilder;
 import net.minecraft.client.model.geom.builders.LayerDefinition;
 import net.minecraft.client.model.geom.builders.MeshDefinition;
 import net.minecraft.client.renderer.SubmitNodeCollector;
+import net.minecraft.client.renderer.block.BlockModelRenderState;
 import net.minecraft.client.renderer.entity.EntityRenderer;
 import net.minecraft.client.renderer.entity.EntityRendererProvider;
+import net.minecraft.client.renderer.entity.DisplayRenderer;
 import net.minecraft.client.renderer.entity.state.EntityRenderState;
 import net.minecraft.client.renderer.extract.LevelExtractor;
 import net.minecraft.client.renderer.rendertype.RenderType;
@@ -30,6 +32,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.projectile.ProjectileUtil;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.EntityHitResult;
@@ -85,7 +88,7 @@ public final class TrainClient {
         return switch (component) {
             case FRONT_COUPLER, REAR_COUPLER -> 0xff56d5ff;
             case HANDBRAKE -> 0xffffb942;
-            case LEFT_DOOR, RIGHT_DOOR, TENDER_SEAT -> 0xff68e580;
+            case LEFT_DOOR, RIGHT_DOOR, TENDER_SEAT, TREECUTTERS_LANTERN, CRAFTING_TABLE -> 0xff68e580;
         };
     }
 
@@ -130,6 +133,7 @@ public final class TrainClient {
             event.registerEntityRenderer(type.get(), context -> new VehicleRenderer<>(context, VehicleModels.withBrakeMount(kind), kind)));
         event.registerEntityRenderer(Trainmod.MOUNTED_BUFFER.get(),
             context -> new VehicleRenderer<>(context, VehicleModels.buffer(), null));
+        event.registerEntityRenderer(Trainmod.TREECUTTERS_WORKER.get(), net.minecraft.client.renderer.entity.VillagerRenderer::new);
         event.registerBlockEntityRenderer(Trainmod.SWITCH_POINTS.get(), context -> new SwitchPointRenderer());
         event.registerBlockEntityRenderer(Trainmod.SWITCH_STAND.get(), context -> new SwitchStandRenderer());
         event.registerBlockEntityRenderer(Trainmod.CATENARY_ANCHOR.get(), context -> new CatenaryRenderer());
@@ -235,6 +239,7 @@ public final class TrainClient {
         float wheelPhase;
         float boreTireExtension;
         int headlight;
+        boolean treecuttersActive;
         final Vec3[] couplerTips = new Vec3[2];
         final Vec3[] couplerVectors = new Vec3[2];
     }
@@ -286,6 +291,8 @@ public final class TrainClient {
         private final Map<Integer, ModelPart> rods;
         private final MetricEntityModel piston;
         private final List<Map<Integer, ModelPart>> lights;
+        private final List<Map<Integer, ModelPart>> treecuttersLantern;
+        private final BlockModelRenderState craftingTable;
 
         VehicleRenderer(EntityRendererProvider.Context context, List<VehicleModels.Box> boxes, TrainVehicle.Kind kind) {
             super(context);
@@ -316,6 +323,14 @@ public final class TrainClient {
                     bakeVehicleCubes(VehicleModels.headlight(kind, 1, false)),
                     bakeVehicleCubes(VehicleModels.headlight(kind, -1, true)),
                     bakeVehicleCubes(VehicleModels.headlight(kind, 1, true))) : List.of();
+            treecuttersLantern = kind == TrainVehicle.Kind.TREECUTTERS_PASSENGER_CAR
+                ? List.of(bakeVehicleCubes(VehicleModels.treecuttersLantern(kind, false)),
+                    bakeVehicleCubes(VehicleModels.treecuttersLantern(kind, true))) : List.of();
+            craftingTable = treecuttersLantern.isEmpty() ? null : new BlockModelRenderState();
+            if (craftingTable != null) {
+                context.getBlockModelResolver().update(craftingTable, Blocks.CRAFTING_TABLE.defaultBlockState(),
+                    DisplayRenderer.BLOCK_DISPLAY_CONTEXT);
+            }
         }
 
         private static Map<Integer, ModelPart> bakeVehicleCubes(List<VehicleModels.Box> boxes) {
@@ -351,6 +366,7 @@ public final class TrainClient {
                 state.wheelPhase = train.wheelPhase(partial);
                 state.boreTireExtension = train.boreTireExtension(partial);
                 state.headlight = train.headlight();
+                state.treecuttersActive = train.treecuttersActive();
             }
             for (int end = 0; end < 2; end++) {
                 state.couplerVectors[end] = null;
@@ -401,6 +417,22 @@ public final class TrainClient {
                     parts.forEach((color, model) -> collector.submitModelPart(model, pose, MATERIAL, light,
                         OverlayTexture.NO_OVERLAY, null, 0xff000000 | color, state.outlineColor));
                 }
+            }
+            if (!treecuttersLantern.isEmpty()) {
+                treecuttersLantern.get(state.treecuttersActive ? 1 : 0).forEach((color, model) -> {
+                    int light = color == VehicleModels.LANTERN_GLOW ? net.minecraft.util.LightCoordsUtil.FULL_BRIGHT : state.lightCoords;
+                    collector.submitModelPart(model, pose, MATERIAL, light, OverlayTexture.NO_OVERLAY,
+                        null, 0xff000000 | color, state.outlineColor);
+                });
+            }
+            if (craftingTable != null) {
+                Vec3 corner = VehicleModels.CRAFTING_TABLE_CORNER;
+                float size = (float) VehicleModels.CRAFTING_TABLE_SIZE;
+                pose.pushPose();
+                pose.translate(corner.x, corner.y, corner.z);
+                pose.scale(size, size, size);
+                craftingTable.submit(pose, collector, state.lightCoords, OverlayTexture.NO_OVERLAY, state.outlineColor);
+                pose.popPose();
             }
             if (state.railLayers > 0 && !railLoads.isEmpty()) {
                 submitParts(railLoads.get(state.railLayers - 1), state, pose, collector);

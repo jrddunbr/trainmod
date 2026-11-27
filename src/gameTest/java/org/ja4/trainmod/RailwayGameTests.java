@@ -13,6 +13,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.item.Items;
@@ -51,6 +52,13 @@ final class RailwayGameTests {
         new Case("placement_previews", RailwayGameTests::placementPreviews),
         new Case("freight_riders_and_brakes", RailwayGameTests::freightRidersAndBrakes),
         new Case("bore_drives_and_lays_rail", RailwayGameTests::boreDrivesAndLaysRail),
+        new Case("bore_work_train", RailwayAdditionsGameTest::boreWorkTrain),
+        new Case("treecutters_crew", RailwayAdditionsGameTest::treecuttersCrew),
+        new Case("treecutters_swimming_and_overhead", RailwayAdditionsGameTest::treecuttersSwimmingAndOverhead),
+        new Case("treecutters_ground_drops", RailwayAdditionsGameTest::treecuttersGroundDrops),
+        new Case("treecutters_cooperate", RailwayAdditionsGameTest::treecuttersCooperate),
+        new Case("treecutters_ballast_clearance", RailwayAdditionsGameTest::treecuttersBallastClearance),
+        new Case("treecutters_from_above", RailwayAdditionsGameTest::treecuttersFromAbove),
         new Case("creative_bore", RailwayGameTests::creativeBore),
         new Case("turnout_redstone", RailwayGameTests::turnoutRedstone),
         new Case("fuel_and_legacy_stock", RailwayAdditionsGameTest::fuelAndLegacyStock),
@@ -64,6 +72,7 @@ final class RailwayGameTests {
         new Case("regulator_cargo", RailwayAdditionsGameTest::regulatorCargo),
         new Case("track_wear", RailwayAdditionsGameTest::trackWear),
         new Case("regulator_walls", RailwayAdditionsGameTest::regulatorWalls),
+        new Case("regulator_rechecks_slopes", RailwayAdditionsGameTest::regulatorRechecksSlopes),
         new Case("regulator_grade", RailwayAdditionsGameTest::regulatorGrade),
         new Case("bore_tickets", RailwayAdditionsGameTest::boreTickets),
         new Case("bridges_and_cabin", RailwayAdditionsGameTest::bridgesAndCabin),
@@ -331,7 +340,7 @@ final class RailwayGameTests {
                 "A train can follow the connection to the bridge rail");
             test.assertTrue(TrackEnds.connection(level, bridge.north(), port) == TrackEnds.Connection.BRIDGE,
                 "A bridge connection keeps the rail open at the joint and tapers the ballast onto the deck");
-            test.assertTrue(TrackWork.ballast(level, player, bridge.below(), 8, TrainVehicle.BallastMode.NARROW) == 0,
+            test.assertTrue(TrackWork.ballast(level, player, bridge.below(), 8, TrainVehicle.BallastMode.NARROW, List.of()) == 0,
                 "The ballast car leaves bridge track unballasted");
         } finally {
             level.getServer().getPlayerList().remove(player);
@@ -961,7 +970,8 @@ final class RailwayGameTests {
                 regulator.cargo.setItem(0, new ItemStack(Items.GRAVEL, 2));
                 regulator.regulate(level, driver, firstRail.below());
                 var finished = at(level, firstRail);
-                test.assertTrue(regulator.cargo.isEmpty() && finished != null
+                test.assertTrue(regulator.cargo.countItem(Items.GRAVEL) == 0
+                    && regulator.cargo.countItem(Items.COBBLESTONE) == 1 && finished != null
                     && level.getBlockState(firstRail).is(Trainmod.TRACK.get(TrackGeometry.Kind.STRAIGHT).get())
                     && level.getBlockState(firstRail).getValue(TrackBlock.ROTATION) == heading
                     && level.getBlockState(firstRail.below()).is(Trainmod.BALLAST.get())
@@ -972,9 +982,6 @@ final class RailwayGameTests {
                 for (int tick = 0; tick < 60; tick++) driver.baseTick();
             }
             BlockPos starter = test.absolutePos(new BlockPos(0, 269, 0));
-            for (BlockPos ground : BlockPos.betweenClosed(starter.offset(-1, -1, 0), starter.offset(1, -1, 5))) {
-                level.setBlockAndUpdate(ground, Blocks.STONE.defaultBlockState());
-            }
             straight(level, starter, 0);
             driver.setPos(TrackGeometry.origin(starter).add(1, 0, 0));
             driver.setYRot(0);
@@ -983,11 +990,11 @@ final class RailwayGameTests {
             var boreItem = Trainmod.VEHICLE_ITEMS.get(TrainVehicle.Kind.TUNNEL_BORE).get();
             driver.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(boreItem));
             test.assertTrue(boreItem.useOn(useAt(driver, starter, 0.5, TrackGeometry.RAIL_HEIGHT, 0.5))
-                == net.minecraft.world.InteractionResult.SUCCESS, "A single starter rail and solid ground support a newly placed bore");
+                == net.minecraft.world.InteractionResult.SUCCESS, "A bore can be placed on a single starter rail over a gap");
             var bore = level.getEntitiesOfClass(TrainVehicle.class, new net.minecraft.world.phys.AABB(starter).inflate(4))
                 .stream().filter(vehicle -> vehicle.kind == TrainVehicle.Kind.TUNNEL_BORE).findFirst().orElseThrow();
             test.assertTrue(bore.getZ() > starter.getZ() + 1 && BoreDrive.onRearRails(level, bore.cursor())
-                && BoreDrive.tireExtension(level, bore.cursor()) > 0, "The rear truck starts on the rail and the front tires are on the ground");
+                && BoreDrive.tireExtension(level, bore.cursor()) > 0, "The rear truck starts on the rail and the front tires deploy");
             driver.setPos(bore.position());
             test.assertTrue(driver.startRiding(bore), "The driver boards the bore on its short starter");
             for (int tick = 0; tick < 35; tick++) {
@@ -1046,7 +1053,7 @@ final class RailwayGameTests {
             test.assertTrue(RailNetwork.railAt(level, firstNewRail) != null
                 && RailNetwork.railAt(level, firstNewRail.west()) != null
                 && level.getBlockState(firstNewRail).is(Trainmod.TRACK.get(TrackGeometry.Kind.UNBALLASTED_STRAIGHT).get())
-                && level.getBlockState(firstNewRail.below()).is(Blocks.COBBLESTONE)
+                && level.getBlockState(firstNewRail.below()).is(Blocks.GRASS_BLOCK)
                 && level.getBlockState(firstNewRail.below(2)).is(Blocks.DIRT),
                 "The creative driver can lay rail on a westbound, grass-covered flatland with empty supply slots");
             test.assertTrue(bore.supplies.isEmpty() && bore.cargo.getItem(0).is(rail) && bore.cargo.getItem(0).getCount() == 64,
@@ -1340,10 +1347,12 @@ final class RailwayGameTests {
         }
         test.assertTrue(freight.cargo.countItem(Items.COBBLESTONE) == 10 && bore.cargo.isEmpty(),
             "Excavation drops go to freight before the buffer");
-        test.assertTrue(TrackWork.ballast(level, driver, slice.below(), 1, TrainVehicle.BallastMode.NARROW) == 1
+        var salvage = new SimpleContainer(1);
+        test.assertTrue(TrackWork.ballast(level, driver, slice.below(), 1, TrainVehicle.BallastMode.NARROW, List.of(salvage)) == 1
             && TrackBlock.ballasted(level.getBlockState(slice)) && level.getBlockState(slice.below()).is(Blocks.COBBLESTONE),
             "One eighth of a ballast block fills the ties and leaves the roadbed intact");
-        test.assertTrue(TrackWork.ballast(level, driver, slice.below(), 8, TrainVehicle.BallastMode.NARROW) == 8,
+        test.assertTrue(TrackWork.ballast(level, driver, slice.below(), 8, TrainVehicle.BallastMode.NARROW, List.of(salvage)) == 8
+            && salvage.countItem(Items.COBBLESTONE) == 1,
             "Replacing the roadbed takes one full ballast block");
         test.assertTrue(level.getBlockState(slice.below()).is(Trainmod.BALLAST.get())
             && RailNetwork.railAt(level, slice) != null, "Replacing ballast preserves usable track");
