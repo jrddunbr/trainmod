@@ -182,6 +182,16 @@ final class VehicleModels {
 
     static List<Box> forKind(TrainVehicle.Kind kind) {
         var boxes = withBrakeMount(kind);
+        if (kind == TrainVehicle.Kind.ELECTRIC_SHUNTER) {
+            var folded = new ArrayList<>(boxes);
+            for (int head = 0; head < 2; head++) {
+                float z = (float) (16 * Pantographs.longitudinal(head));
+                float y = 16 * Pantographs.folded(head);
+                folded.add(new Box(WHEEL, -6.55f, y - 0.48f, z - 0.55f, 13.1f, 0.48f, 1.1f));
+                folded.add(new Box(STEEL, -3.5f, y - 1.7f, z - 1, 7, 1.2f, 2));
+            }
+            return folded;
+        }
         if (kind.powered) return boxes;
         var posed = new ArrayList<>(boxes);
         for (var part : brakeWheel(kind)) {
@@ -409,10 +419,8 @@ final class VehicleModels {
         box(0x435f73, -12, 9, 5, 24, 7.5f, 12);
         box(0x2c4450, -10, 16.4f, 7, 20, 1.1f, 9);
         box(STEEL, -4, 9, -3, 8, 1.8f, 5);
-        box(WHEEL, -7, 17.5f, 7.5f, 14, 0.7f, 6);
-        box(STEEL, -6, 18.2f, 8.5f, 1.2f, 2.1f, 4);
-        box(STEEL, 4.8f, 18.2f, 8.5f, 1.2f, 2.1f, 4);
-        box(WHEEL, -6, 20.3f, 9.4f, 12, 0.5f, 1.15f);
+        box(WHEEL, -8, 17.5f, 8, 16, 1.15f, 6.5f);
+        box(WHEEL, -8, 15.4f, -14.5f, 16, 1.15f, 6.5f);
     }
 
     private void flatDeck(int paint) {

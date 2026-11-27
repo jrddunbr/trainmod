@@ -60,7 +60,7 @@ final class ClientAdditionsSmokeTest {
 
     @SubscribeEvent
     static void tick(ClientTickEvent.Pre event) {
-        if (MODE == null || MODE.equals("jeiExtruder") || done) return;
+        if (MODE == null || MODE.equals("jeiExtruder") || MODE.equals("railPower") || done) return;
         Minecraft client = Minecraft.getInstance();
         if (client.player == null || client.getSingleplayerServer() == null) return;
         if (!initialized && client.gui.screen() != null) return;
@@ -181,7 +181,7 @@ final class ClientAdditionsSmokeTest {
             BlockPos low = yard.offset(-9, 0, 11);
             var rail = RailNetwork.locate(client.level, low, TrackGeometry.origin(low), new Vec3(-1, 0, -1));
             var state = client.level.getBlockState(low);
-            boolean powered = rail != null && Catenary.powered(client.level, rail);
+            boolean powered = rail != null && Catenary.continuous(client.level, rail);
             LogUtils.getLogger().info("TRAINMOD ADDITIONS CLIENT {} diagonal uphill curve and catenary",
                 state.hasProperty(TrackBlock.DIAGONAL_LOW) && state.getValue(TrackBlock.DIAGONAL_LOW) && powered ? "PASSED" : "FAILED");
             grab(client, "rising-curve-and-wire.png");

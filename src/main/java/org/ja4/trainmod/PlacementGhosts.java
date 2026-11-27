@@ -16,6 +16,7 @@ import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.HorizontalDirectionalBlock;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
@@ -35,11 +36,12 @@ final class PlacementGhosts {
     private static final int STAND = 0x8ed2dfea;
     private static final int STAND_CONNECTED = 0x8e9fdfad;
     private static final int MISSING = 0x6cef454d;
+    static final int TRANSFORMER = 0xbf96f2a3;
     private static Preview pending;
 
     private record Preview(Level level, List<Quad> faces) {}
 
-    private record Quad(Vec3 a, Vec3 b, Vec3 c, Vec3 d, int color) {
+    record Quad(Vec3 a, Vec3 b, Vec3 c, Vec3 d, int color) {
         void draw(PoseStack.Pose pose, VertexConsumer vertices, Vec3 camera) {
             for (Vec3 vertex : List.of(a, b, c, d)) {
                 vertices.addVertex(pose, (float) (vertex.x - camera.x), (float) (vertex.y - camera.y),
@@ -66,6 +68,12 @@ final class PlacementGhosts {
                 }
                 return;
             }
+            if (stack.getItem() instanceof TransformerBank.Kit transformer) {
+                var context = new BlockPlaceContext(client.player, hand, stack, hit);
+                var faces = transformerPreview(transformer, context);
+                if (!faces.isEmpty()) pending = new Preview(client.level, faces);
+                return;
+            }
             if (stack.getItem() instanceof BlockItem item && item.getBlock() instanceof RailwayBlocks.Stand stand) {
                 var context = new BlockPlaceContext(client.player, hand, stack, hit);
                 var pos = context.getClickedPos();
@@ -85,6 +93,31 @@ final class PlacementGhosts {
                 return;
             }
         }
+    }
+
+    static List<Quad> transformerPreview(TransformerBank.Kit kit, BlockPlaceContext context) {
+        var bounds = kit.connectedPreview(context).keySet().stream().map(AABB::new).reduce(AABB::minmax);
+        if (bounds.isEmpty()) return List.of();
+        var outline = bounds.get().inflate(0.012);
+        List<Quad> faces = new ArrayList<>();
+        Vec3 min = new Vec3(outline.minX, outline.minY, outline.minZ);
+        Vec3 max = new Vec3(outline.maxX, outline.maxY, outline.maxZ);
+        box(faces, min, max, Function.identity(), 0x2296f2a3);
+        double edge = 0.035;
+        for (double x : new double[]{min.x, max.x - edge}) {
+            for (double z : new double[]{min.z, max.z - edge}) {
+                box(faces, new Vec3(x, min.y, z), new Vec3(x + edge, max.y, z + edge), Function.identity(), TRANSFORMER);
+            }
+        }
+        for (double y : new double[]{min.y, max.y - edge}) {
+            for (double x : new double[]{min.x, max.x - edge}) {
+                box(faces, new Vec3(x, y, min.z), new Vec3(x + edge, y + edge, max.z), Function.identity(), TRANSFORMER);
+            }
+            for (double z : new double[]{min.z, max.z - edge}) {
+                box(faces, new Vec3(min.x, y, z), new Vec3(max.x, y + edge, z + edge), Function.identity(), TRANSFORMER);
+            }
+        }
+        return faces;
     }
 
     @SubscribeEvent

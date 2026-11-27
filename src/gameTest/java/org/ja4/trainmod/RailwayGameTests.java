@@ -16,6 +16,7 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
@@ -73,6 +74,14 @@ final class RailwayGameTests {
         new Case("equal_locomotive_speeds", RailwayAdditionsGameTest::equalLocomotiveSpeeds),
         new Case("electric_reserve", RailwayAdditionsGameTest::electricReserve),
         new Case("catenary_routes", RailwayAdditionsGameTest::catenaryRoutes),
+        new Case("fuel_generator", CatenaryPowerGameTest::generator),
+        new Case("transformer_bank", CatenaryPowerGameTest::bank),
+        new Case("transmission_circuits", CatenaryPowerGameTest::transmission),
+        new Case("transmission_distance", CatenaryPowerGameTest::transmissionDistance),
+        new Case("overhead_feed_reach", CatenaryPowerGameTest::overheadReach),
+        new Case("catenary_circuits", CatenaryPowerGameTest::circuits),
+        new Case("shunter_draws", CatenaryPowerGameTest::shunterDraws),
+        new Case("compact_45_turnouts", CatenaryPowerGameTest::compactTurnouts),
         new Case("regulator_cargo", RailwayAdditionsGameTest::regulatorCargo),
         new Case("work_train_cargo_sorting", RailwayAdditionsGameTest::workTrainCargoSorting),
         new Case("work_train_ballast_sharing", RailwayAdditionsGameTest::workTrainBallastSharing),
@@ -1136,7 +1145,10 @@ final class RailwayGameTests {
                 bore.discard();
                 for (int tick = 0; tick < 60; tick++) driver.baseTick();
             }
-            BlockPos starter = test.absolutePos(new BlockPos(0, 269, 0));
+            BlockPos testOrigin = test.absolutePos(BlockPos.ZERO);
+            var chunk = ChunkPos.containing(testOrigin);
+            // Leave enough loaded space ahead of the starter for the bore's clearance samples.
+            BlockPos starter = new BlockPos(chunk.getMinBlockX() + 8, testOrigin.getY() + 269, chunk.getMinBlockZ() + 4);
             straight(level, starter, 0);
             driver.setPos(TrackGeometry.origin(starter).add(1, 0, 0));
             driver.setYRot(0);

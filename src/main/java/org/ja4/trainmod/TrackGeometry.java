@@ -23,7 +23,8 @@ final class TrackGeometry {
         WYE_MEDIUM("Medium Wye Turnout"), BRIDGE_STRAIGHT("Straight Bridge Rail"),
         CURVE_MEDIUM_GRADE("Rising Medium 45° Curve"), CURVE_LARGE_GRADE("Rising Large 45° Curve"),
         TURNOUT_45_MEDIUM("Medium 45° Turnout"), TURNOUT_45_LARGE("Large 45° Turnout"),
-        SCISSORS_LONG("Long Scissors Crossover"), UNBALLASTED_STRAIGHT("Unballasted Straight Rail");
+        SCISSORS_LONG("Long Scissors Crossover"), UNBALLASTED_STRAIGHT("Unballasted Straight Rail"),
+        TURNOUT_45_COMPACT("Compact 45° Turnout");
 
         final String title;
 
@@ -49,7 +50,9 @@ final class TrackGeometry {
 
         boolean turnout() { return angledTurnout() || parallelTurnout() || wye() || scissors(); }
 
-        boolean angledTurnout() { return this == TURNOUT_45 || this == TURNOUT_45_MEDIUM || this == TURNOUT_45_LARGE; }
+        boolean angledTurnout() {
+            return this == TURNOUT_45 || this == TURNOUT_45_MEDIUM || this == TURNOUT_45_LARGE || this == TURNOUT_45_COMPACT;
+        }
 
         boolean scissors() { return this == SCISSORS || this == SCISSORS_LONG; }
 
@@ -63,7 +66,9 @@ final class TrackGeometry {
 
         int parallelRun() { return this == TURNOUT_PARALLEL ? 8 : 14; }
 
-        boolean compactGeometry(int rotation) { return crossing() || parallelTurnout() && (rotation & 2) != 0; }
+        boolean compactTurnout() { return this == TURNOUT_45_COMPACT; }
+
+        boolean compactGeometry(int rotation) { return crossing() || compactTurnout() || parallelTurnout() && (rotation & 2) != 0; }
 
         boolean wye() { return this == WYE || this == WYE_MEDIUM; }
 
@@ -260,7 +265,7 @@ final class TrackGeometry {
     static {
         for (Kind kind : Kind.values()) {
             buildShapes(kind, true, false, SHAPES);
-            if (kind.crossing() || kind.parallelTurnout()) buildShapes(kind, false, false, LEGACY_LAYOUTS);
+            if (kind.compactGeometry(2)) buildShapes(kind, false, false, LEGACY_LAYOUTS);
             if (kind.gradedCurve()) buildShapes(kind, true, true, DIAGONAL_LOW_CURVES);
         }
     }
@@ -305,6 +310,10 @@ final class TrackGeometry {
             case GRADE_6 -> List.of(grade(6));
             case GRADE_8 -> List.of(grade(8));
             case TURNOUT_45 -> List.of(straight(4), curve(4, 2, true));
+            case TURNOUT_45_COMPACT -> {
+                int run = compact ? 2 : 3;
+                yield List.of(straight(run), curve(run, 1, true));
+            }
             case TURNOUT_45_MEDIUM -> List.of(straight(8), curve(8, 3, true));
             case TURNOUT_45_LARGE -> List.of(straight(12), curve(12, 5, true));
             case TURNOUT_PARALLEL, TURNOUT_PARALLEL_LONG ->

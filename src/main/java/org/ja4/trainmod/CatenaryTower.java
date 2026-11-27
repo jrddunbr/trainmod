@@ -2,6 +2,7 @@ package org.ja4.trainmod;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.EntityBlock;
@@ -17,6 +18,8 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 
 final class CatenaryTower extends HorizontalDirectionalBlock implements EntityBlock {
     static final BooleanProperty DIAGONAL = BooleanProperty.create("diagonal");
+    static final int STEEL_COLOR = 0x4c5b62;
+    static final int INSULATOR_COLOR = 0xe1d8b2;
     static final double GANTRY_CONTACT = 4 / 16.0;
     static final double GANTRY_BEAM = 8 / 16.0;
 
@@ -96,9 +99,26 @@ final class CatenaryTower extends HorizontalDirectionalBlock implements EntityBl
         return new Anchor(pos, state);
     }
 
+    @Override
+    protected void affectNeighborsAfterRemoval(BlockState state, ServerLevel level, BlockPos pos, boolean moved) {
+        if (kind != Kind.GANTRY) TransmissionExtension.removeFromPole(level, pos);
+    }
+
     static final class Anchor extends BlockEntity {
         Anchor(BlockPos pos, BlockState state) {
             super(Trainmod.CATENARY_ANCHOR.get(), pos, state);
+        }
+
+        @Override
+        public void onLoad() {
+            super.onLoad();
+            CatenaryPower.trackTower(level, worldPosition, true);
+        }
+
+        @Override
+        public void setRemoved() {
+            super.setRemoved();
+            CatenaryPower.trackTower(level, worldPosition, false);
         }
     }
 }

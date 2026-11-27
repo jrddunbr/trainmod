@@ -404,11 +404,13 @@ final class RailwayAdditionsGameTest {
                 "An empty new shunter stays parked off the wire");
             gantry(level, start.south(2));
             gantry(level, start.south(9));
+            var bank = CatenaryPowerGameTest.installBank(level, start.south(6).west(3), Direction.EAST);
+            bank.energy.set(10_000);
         });
         test.runAtTickTime(23, () -> {
             test.assertTrue(vehicleData(level, shunter).getIntOr("BatteryTicks", 0) > 0,
                 "The shunter charges while parked under a working span. Entity ticks: " + shunter.tickCount
-                    + ", span: " + Catenary.powered(level, shunter.cursor()));
+                    + ", span: " + Catenary.continuous(level, shunter.cursor()));
             level.removeBlock(start.south(9).above(CatenaryTower.Kind.GANTRY.height), false);
         });
         test.runAtTickTime(46, () -> {
@@ -429,13 +431,13 @@ final class RailwayAdditionsGameTest {
         }
         gantry(level, root);
         var middle = RailwayGameTests.at(level, root.south(8));
-        test.assertTrue(!Catenary.powered(level, middle), "An isolated tower provides no power");
+        test.assertTrue(!Catenary.continuous(level, middle), "An isolated tower cannot form a span");
         setTower(level, root.south(16).west(), Trainmod.CATENARY_SINGLE.get(), Direction.EAST);
-        test.assertTrue(!Catenary.powered(level, middle), "Different wire heights do not connect");
+        test.assertTrue(!Catenary.continuous(level, middle), "Different wire heights do not connect");
         gantry(level, root.south(17));
-        test.assertTrue(!Catenary.powered(level, middle), "A span longer than 16 blocks provides no power");
+        test.assertTrue(!Catenary.continuous(level, middle), "A span longer than 16 blocks is discontinuous");
         gantry(level, root.south(16));
-        test.assertTrue(Catenary.powered(level, middle), "A continuous sixteen-block gantry span powers the line");
+        test.assertTrue(Catenary.continuous(level, middle), "A sixteen-block gantry span forms continuous wire");
         var first = Catenary.attachments(level, root.above(CatenaryTower.Kind.GANTRY.height), level.getBlockState(root.above(CatenaryTower.Kind.GANTRY.height))).getFirst();
         var span = Catenary.spansFrom(level, first, 1).getFirst();
         test.assertTrue(span.wire().stream().allMatch(p -> p.y == middle.point().y + 4
@@ -448,13 +450,13 @@ final class RailwayAdditionsGameTest {
         setTower(level, earlierMount, Trainmod.CATENARY_GANTRY.get(), Direction.NORTH);
         var lower = Catenary.attachments(level, earlierMount, level.getBlockState(earlierMount)).getFirst();
         var mixedSpan = Catenary.spansFrom(level, first, 1).getFirst();
-        test.assertTrue(Catenary.powered(level, middle)
+        test.assertTrue(Catenary.continuous(level, middle)
             && lower.height() == middle.point().y + 3
             && mixedSpan.wire().getFirst().distanceToSqr(first.contact()) < 1e-10
             && mixedSpan.wire().getLast().distanceToSqr(lower.contact()) < 1e-10,
-            "A mixed-height span stays powered and seats its wire under both gantry mounts");
+            "A mixed-height span remains continuous and seats its wire under both gantry mounts");
         level.removeBlock(root.south(5), false);
-        test.assertTrue(!Catenary.powered(level, middle), "Missing track breaks the span");
+        test.assertTrue(!Catenary.continuous(level, middle), "Missing track breaks the span");
 
         BlockPos turnout = root.above(8);
         RailwayGameTests.piece(level, turnout, TrackGeometry.Kind.TURNOUT_45, 0, true);
@@ -464,12 +466,12 @@ final class RailwayAdditionsGameTest {
         RailwayGameTests.straight(level, exit, 0);
         gantry(level, turnout.north());
         gantry(level, exit);
-        test.assertTrue(Catenary.powered(level, RailwayGameTests.at(level, turnout)),
-            "The wired straight route through the turnout has power");
+        test.assertTrue(Catenary.continuous(level, RailwayGameTests.at(level, turnout)),
+            "The straight route has continuous wire through the turnout");
         level.setBlock(turnout, level.getBlockState(turnout).setValue(BlockStateProperties.POWERED, true),
             Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE);
-        test.assertTrue(!Catenary.powered(level, RailwayGameTests.at(level, turnout)),
-            "The unwired branch lacks power when the turnout is thrown");
+        test.assertTrue(!Catenary.continuous(level, RailwayGameTests.at(level, turnout)),
+            "The thrown branch has no continuous wire");
 
         var branch = RailNetwork.physicalRailsAt(level, turnout).get(1);
         Vec3 tangent = branch.path().tangent(branch.path().length);
@@ -482,7 +484,7 @@ final class RailwayAdditionsGameTest {
         var ends = Catenary.spansFrom(level, attachment, 1).stream().map(spanAtSwitch -> spanAtSwitch.end().tower()).toList();
         test.assertTrue(ends.containsAll(List.of(exit.above(CatenaryTower.Kind.GANTRY.height), branchExit.above(CatenaryTower.Kind.GANTRY.height))),
             "The shared wire lookup reaches both turnout branches regardless of the selected route");
-        test.assertTrue(Catenary.powered(level, RailwayGameTests.at(level, turnout)),
+        test.assertTrue(Catenary.continuous(level, RailwayGameTests.at(level, turnout)),
             "The newly wired diverging branch has power");
         BlockPos doubleTrack = root.above(16);
         for (int z = 0; z < 8; z++) {
@@ -494,7 +496,7 @@ final class RailwayAdditionsGameTest {
         }
         for (int x : new int[]{0, 3}) {
             var under = RailwayGameTests.at(level, doubleTrack.offset(x, 0, 3));
-            test.assertTrue(Catenary.powered(level, under), "A matching double-track tower pair powers both tracks");
+            test.assertTrue(Catenary.continuous(level, under), "A matching double-track tower pair spans both tracks");
         }
         var base = doubleTrack.west();
         var anchor = Catenary.attachments(level, base, level.getBlockState(base)).getFirst();
@@ -513,7 +515,7 @@ final class RailwayAdditionsGameTest {
         setTower(level, diagonal.offset(6, 0, 8), Trainmod.CATENARY_SINGLE.get(), Direction.EAST);
         var diagonalAnchor = Catenary.attachments(level, remotePole, level.getBlockState(remotePole)).getFirst();
         test.assertTrue(diagonalAnchor.contact().subtract(TrackGeometry.origin(diagonal)).horizontalDistance() < 0.01
-            && Catenary.powered(level, RailwayGameTests.at(level, diagonal.offset(4, 0, 4))),
+            && Catenary.continuous(level, RailwayGameTests.at(level, diagonal.offset(4, 0, 4))),
             "Extended arms connect diagonal wires at the rail center with room around both poles");
         level.removeBlock(remotePole, false);
         level.removeBlock(diagonal.offset(6, 0, 8), false);
@@ -531,7 +533,7 @@ final class RailwayAdditionsGameTest {
             .equals(new BlockPos(1, 0, 1)), "Rotating the tower preserves its diagonal orientation");
         level.setBlockAndUpdate(angledPole, angledState);
         level.setBlockAndUpdate(diagonal.offset(7, 0, 9), angledState);
-        test.assertTrue(Catenary.powered(level, RailwayGameTests.at(level, diagonal.offset(4, 0, 4))),
+        test.assertTrue(Catenary.continuous(level, RailwayGameTests.at(level, diagonal.offset(4, 0, 4))),
             "Two diagonal poles connect directly across diagonal rails");
         BlockPos curve = root.above(32);
         RailwayGameTests.piece(level, curve, TrackGeometry.Kind.CURVE_SMALL, 0, true);
@@ -540,7 +542,7 @@ final class RailwayAdditionsGameTest {
         setTower(level, farSide, Trainmod.CATENARY_SINGLE.get(), Direction.EAST);
         var curvedRail = RailNetwork.railAt(level, curve);
         var curvedPosition = new RailNetwork.Position(curvedRail, curvedRail.path().length / 2, 1);
-        test.assertTrue(Catenary.powered(level, curvedPosition), "The cantilever reaches and follows a curved rail centerline");
+        test.assertTrue(Catenary.continuous(level, curvedPosition), "The cantilever reaches and follows a curved rail centerline");
         BlockPos grade = root.above(40);
         RailwayGameTests.piece(level, grade, TrackGeometry.Kind.GRADE_8, 0, true);
         RailNetwork.Rail incline = RailNetwork.railAt(level, grade);
@@ -551,7 +553,7 @@ final class RailwayAdditionsGameTest {
         var slopeAnchor = Catenary.attachments(level, low, level.getBlockState(low)).getFirst();
         var slopeWire = Catenary.spansFrom(level, slopeAnchor, 1).getFirst().wire();
         test.assertTrue(slopeWire.getLast().y - slopeWire.getFirst().y > 0.99
-            && Catenary.powered(level, new RailNetwork.Position(incline, incline.path().length / 2, 1)),
+            && Catenary.continuous(level, new RailNetwork.Position(incline, incline.path().length / 2, 1)),
             "A wire follows the grade between towers at different elevations and powers the train");
         BlockPos gradeMount = grade.south(5).above(4);
         gantry(level, grade.south(5));

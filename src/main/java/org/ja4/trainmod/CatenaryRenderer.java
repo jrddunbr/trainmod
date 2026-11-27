@@ -23,9 +23,9 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 final class CatenaryRenderer implements BlockEntityRenderer<CatenaryTower.Anchor, CatenaryRenderer.State> {
-    private static final int STEEL = 0x4c5b62;
+    private static final int STEEL = CatenaryTower.STEEL_COLOR;
     private static final int CONCRETE = 0xb2b0a8;
-    private static final int INSULATOR = 0xe1d8b2;
+    private static final int INSULATOR = CatenaryTower.INSULATOR_COLOR;
     private static final int WIRE = 0x635647;
     private static final RenderType MATERIAL = RenderTypes.entityCutout(
         Identifier.fromNamespaceAndPath(Trainmod.ID, "textures/entity/paint.png"));

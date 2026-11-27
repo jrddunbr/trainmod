@@ -64,6 +64,7 @@ final class TrackMaterials {
             case GRADE_6 -> List.of(STRAIGHT_6, STONE, STONE);
             case GRADE_8 -> List.of(STRAIGHT_8, STONE, STONE);
             case TURNOUT_45 -> List.of(STRAIGHT_3, STRAIGHT, SMALL, TORCH);
+            case TURNOUT_45_COMPACT -> List.of(STRAIGHT_3, STRAIGHT, RAIL, TIES, TORCH);
             case TURNOUT_45_MEDIUM, TURNOUT_PARALLEL -> List.of(STRAIGHT_8, MEDIUM, TORCH);
             case TURNOUT_45_LARGE -> List.of(STRAIGHT_12, LARGE, TORCH);
             case TURNOUT_PARALLEL_LONG -> List.of(STRAIGHT_12, STRAIGHT_3, LARGE, TORCH);

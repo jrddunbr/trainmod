@@ -349,8 +349,8 @@ class TrackBlock extends Block {
         IntegerProperty indexProperty() { return LONG_INDEX; }
     }
 
-    static final class ParallelTurnout extends Turnout {
-        ParallelTurnout(TrackGeometry.Kind kind, Properties properties) {
+    static final class CompactableTurnout extends Turnout {
+        CompactableTurnout(TrackGeometry.Kind kind, Properties properties) {
             super(kind, properties);
             registerDefaultState(defaultBlockState().setValue(COMPACT, false));
         }

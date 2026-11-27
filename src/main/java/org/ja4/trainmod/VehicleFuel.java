@@ -56,6 +56,7 @@ final class VehicleFuel {
         diesel--;
     }
 
+    boolean canCharge() { return battery < BATTERY_TICKS; }
     boolean hasCharge() { return battery > 0; }
     void drawCharge() { battery--; }
     void charge() { battery = Math.min(battery + 1, BATTERY_TICKS); }

@@ -42,6 +42,8 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.common.util.FakePlayer;
 import net.neoforged.neoforge.common.util.FakePlayerFactory;
+import net.neoforged.neoforge.transfer.transaction.Transaction;
+import net.neoforged.neoforge.transfer.transaction.TransactionContext;
 
 final class TrainVehicle extends VehicleEntity {
     enum Kind {
@@ -165,6 +167,16 @@ final class TrainVehicle extends VehicleEntity {
     private static final net.minecraft.network.syncher.EntityDataAccessor<Byte> AUDIO =
         net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
             net.minecraft.network.syncher.EntityDataSerializers.BYTE);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Float> PANTOGRAPH_FRONT =
+        net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
+            net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Float> PANTOGRAPH_REAR =
+        net.minecraft.network.syncher.SynchedEntityData.defineId(TrainVehicle.class,
+            net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
+    private final float[] previousPantograph = {Pantographs.folded(0), Pantographs.folded(1)};
+    private final float[] currentPantograph = previousPantograph.clone();
+    private float pantographsRaised;
+    private long lastElectricTractionRequest = Long.MIN_VALUE;
     private float previousWheelPhase;
     private float wheelPhase;
     private double wheelTravel;
@@ -188,6 +200,8 @@ final class TrainVehicle extends VehicleEntity {
         builder.define(BORE_TIRES, 0f);
         builder.define(HEADLIGHT, 0);
         builder.define(AUDIO, (byte) 0);
+        builder.define(PANTOGRAPH_FRONT, Pantographs.folded(0));
+        builder.define(PANTOGRAPH_REAR, Pantographs.folded(1));
     }
 
     float renderBank(float partial) {
@@ -591,6 +605,10 @@ final class TrainVehicle extends VehicleEntity {
     public void tick() {
         super.tick();
         if (level().isClientSide()) {
+            for (int head = 0; kind == Kind.ELECTRIC_SHUNTER && head < 2; head++) {
+                previousPantograph[head] = currentPantograph[head];
+                currentPantograph[head] = entityData.get(pantographData(head));
+            }
             previousWheelPhase = wheelPhase;
             wheelPhase = entityData.get(WHEEL_PHASE);
             previousBank = currentBank;
@@ -612,8 +630,15 @@ final class TrainVehicle extends VehicleEntity {
                 }
             }
             if (kind.powered) {
-                if (kind == Kind.ELECTRIC_SHUNTER && Catenary.powered(level, cursor())) fuel.charge();
+                if (kind == Kind.ELECTRIC_SHUNTER) {
+                    float change = playerAboard() ? 0.16f : -0.16f;
+                    pantographsRaised = Math.clamp(pantographsRaised + change, 0, 1);
+                }
                 driveIfSelected(level);
+                if (kind == Kind.ELECTRIC_SHUNTER) {
+                    updatePantographs(level);
+                    if (playerAboard() && fuel.canCharge()) CatenaryPower.queueCharge(level, this);
+                }
             } else {
                 roll(level);
             }
@@ -807,12 +832,20 @@ final class TrainVehicle extends VehicleEntity {
         boolean reverse = (keys & TrainControls.REVERSE) != 0;
         int orientation = stand != this && linkedEnd(stand.getUUID()) == stand.linkedEnd(getUUID()) ? -1 : 1;
         double throttle = (forward == reverse ? 0 : forward ? 1 : -1) * orientation;
+        boolean electric = throttle != 0 && consist.stream().anyMatch(member -> member.vehicle.kind == Kind.ELECTRIC_SHUNTER);
+        try (var energy = electric ? Transaction.openRoot() : null) {
+            driveWithPower(level, driver, stand, consist, throttle, energy);
+        }
+    }
+
+    private void driveWithPower(ServerLevel level, ServerPlayer driver, TrainVehicle stand, List<Member> consist,
+                                double throttle, Transaction energy) {
         List<Traction> powered = new ArrayList<>();
         if (throttle != 0) {
             for (Member member : consist) {
                 if (!member.vehicle.kind.powered) continue;
                 Traction draw = member.vehicle.traction(level, member.vehicle == this ? stand : null,
-                    throttle * member.movement);
+                    throttle * member.movement, energy);
                 if (draw != null) powered.add(draw);
             }
         }
@@ -852,6 +885,7 @@ final class TrainVehicle extends VehicleEntity {
             for (Traction draw : powered) if (draw.steam != null) steaming.add(draw.engine);
         }
         if (moveConsist(level, driver, consist, steaming) && target != 0) {
+            if (energy != null) energy.commit();
             for (Traction draw : powered) draw.engine.consumeTraction(level, draw);
         }
     }
@@ -879,7 +913,7 @@ final class TrainVehicle extends VehicleEntity {
         }
     }
 
-    private Traction traction(ServerLevel level, TrainVehicle stand, double throttle) {
+    private Traction traction(ServerLevel level, TrainVehicle stand, double throttle, TransactionContext energy) {
         return switch (kind) {
             case STEAM_LOCOMOTIVE -> {
                 TrainVehicle tender = stand == null ? tender(level, false) : stand;
@@ -889,7 +923,8 @@ final class TrainVehicle extends VehicleEntity {
             }
             case LOCOMOTIVE -> fuel.hasDiesel(supplies) ? new Traction(this, null, null, false, throttle) : null;
             case ELECTRIC_SHUNTER -> {
-                boolean wired = Catenary.powered(level, cursor());
+                lastElectricTractionRequest = level.getGameTime();
+                boolean wired = drawFromWire(level, energy);
                 yield wired || fuel.hasCharge() ? new Traction(this, null, null, wired, throttle) : null;
             }
             case TUNNEL_BORE -> new Traction(this, null, null, false, throttle);
@@ -909,6 +944,46 @@ final class TrainVehicle extends VehicleEntity {
                 if (!draw.wired) fuel.drawCharge();
             }
             default -> {}
+        }
+    }
+
+    private static net.minecraft.network.syncher.EntityDataAccessor<Float> pantographData(int head) {
+        return head == 0 ? PANTOGRAPH_FRONT : PANTOGRAPH_REAR;
+    }
+
+    float pantographHeight(int head, float partial) {
+        return net.minecraft.util.Mth.lerp(partial, previousPantograph[head], currentPantograph[head]);
+    }
+
+    private boolean playerAboard() { return getPassengers().stream().anyMatch(Player.class::isInstance); }
+
+    private void updatePantographs(ServerLevel level) {
+        var rail = pantographsRaised > 0 ? cursor() : null;
+        var frame = currentFrame(position());
+        for (int head = 0; head < 2; head++) {
+            var pickup = Pantographs.pickup(level, rail, frame, head);
+            entityData.set(pantographData(head), Pantographs.height(head, pantographsRaised, pickup));
+        }
+    }
+
+    private boolean drawFromWire(ServerLevel level, TransactionContext energy) {
+        if (!playerAboard() || pantographsRaised < 0.90f) return false;
+        var rail = cursor();
+        var frame = currentFrame(position());
+        for (int head = 0; head < 2; head++) {
+            var pickup = Pantographs.pickup(level, rail, frame, head);
+            if (Pantographs.touches(head, pantographsRaised, pickup) && pickup.draw(level, energy)) return true;
+        }
+        return false;
+    }
+
+    void chargeReserve(ServerLevel level) {
+        long now = level.getGameTime();
+        if (!isAlive() || speed != 0 || lastMoveTick == now || lastElectricTractionRequest == now || !fuel.canCharge()) return;
+        try (var energy = Transaction.openRoot()) {
+            if (!drawFromWire(level, energy)) return;
+            energy.commit();
+            fuel.charge();
         }
     }
 
@@ -966,6 +1041,7 @@ final class TrainVehicle extends VehicleEntity {
             double movement = travel * consist.get(i).movement;
             if (vehicle.kind == Kind.TUNNEL_BORE) BoreDrive.pushMobs(level, vehicle, next, movement);
             vehicle.moveToRail(next);
+            if (vehicle.kind == Kind.ELECTRIC_SHUNTER && vehicle != this) vehicle.updatePantographs(level);
             vehicle.lastMoveTick = level.getGameTime();
             vehicle.lastMoveLeader = getUUID();
             if (vehicle.kind == Kind.STEAM_LOCOMOTIVE) vehicle.turnWheels(level, movement, steaming.contains(vehicle));

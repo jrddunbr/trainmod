@@ -42,6 +42,7 @@ One plank of any type yields one **bundle of four ties** in the stonecutter. In 
 | 1:6 or 1:8 grade | The matching 6- or 8-block straight and two stone |
 | 90° diamond crossing | Two 3-block straights directly above and below a center tie bundle |
 | 45° diamond crossing | Two 3-block straights in opposite corners and a tie bundle in the center |
+| Compact 45° turnout | One 3-block straight, one single-block straight, one rail, one tie bundle, and a redstone torch |
 | 45° turnout | One 3-block straight, one single-block straight, one small curve, and a redstone torch |
 | Medium 45° turnout | One 8-block straight, one medium curve, and a redstone torch |
 | Large 45° turnout | One 12-block straight, one large curve, and a redstone torch |
@@ -60,7 +61,7 @@ New track is laid bare. An active ballast regulator with material aboard protect
 - Sneak-right-click the **RS3** to open its fuel inventory. It accepts buckets tagged `c:buckets/diesel`. When that tag is empty, craft a diesel bucket from one water bucket and one coal. A bucket supplies 1,200 powered ticks and leaves an empty bucket in its fuel slot. The lit headlight indicates the direction of travel.
 - Couple the **PRR 4-4-2** directly to a **steam tender**. Right-click the tender body for its 64-coal slot and eight water-bucket slots. Right-click the highlighted seat on top to board. Press sneak to dismount. With the tender coupled, drive in the direction it faces. Each coal and water bucket provides 400 powered ticks. Collect empty buckets from the supply inventory.
 - Hold **H** for the steam whistle or RS3 horn. Press **B** to start or stop the bell. Both keys can be rebound under Railway in the Controls menu.
-- The RS3 and electric shunter run equally fast in either direction. New **electric shunters** start with an empty reserve. A working overhead span powers movement and charges the reserve even when parked. A full reserve provides 200 powered ticks away from the wire.
+- The RS3 and electric shunter run equally fast in either direction. New **electric shunters** start with an empty reserve. Boarding raises both pantographs to the overhead wire. With a player aboard and a head touching live wire, the shunter spends 20 FE per traction tick or per reserve tick while parked. Traction takes priority. A full reserve provides 200 powered ticks away from the wire.
 
 ## Superelevation
 
@@ -72,7 +73,7 @@ Put a switch stand beside the first rail block of a turnout. On diagonal turnout
 
 Right-click the steel signal cabin to open its door. It has a one-block footprint, corrugated steel siding, and a 30° gable roof. Crouch to enter. The handle and padlock are decorative. Legacy signals remain in existing worlds as inert blocks.
 
-The medium and large 45° turnouts use the footprints of the matching curves on their diverging routes. The long scissors crossover spans 17 blocks on a cardinal approach and keeps the standard crossover’s three-block track centers and four independent point sets.
+New compact 45° turnouts have a three-block straight route. The branch moves one block sideways over two blocks forward and ends at a diagonal corner. Install an opposing kit with its straight centerline three blocks away and five blocks farther along the track so the branch corners meet directly. Installed four-block compact turnouts keep their original layout. The medium and large 45° turnouts use the footprints of the matching curves on their diverging routes. The long scissors crossover spans 17 blocks on a cardinal approach and keeps the standard crossover’s three-block track centers and four independent point sets.
 
 ## Bridges and catenary
 
@@ -80,7 +81,11 @@ The medium and large 45° turnouts use the footprints of the matching curves on 
 - A **Wide Steel Girder Deck** places one three-block-wide section at the same height as a regular deck. The pier I-beams sit directly below the outer girders. Full-length X braces run beneath square-section timber ties that are twice as wide and deep as the track ties and use the same texture and spacing. To craft one section, put a tie bundle in the center of the top row and a regular steel girder in each outer slot below it.
 - Existing stone arches and wooden trestles load as legacy blocks.
 - Place single-track catenary one block to the side of a track and face toward the rail. The double-track tower spans two tracks three blocks apart from center to center. Both hold wires three blocks above the railhead. Face diagonally during placement to rotate a pole’s arm by 45°. Along curves and diagonals, place the poles farther from the rail so their longer arms clear the loading gauge. Place gantry blocks directly over the rail in the fifth block layer of a tunnel, counting the track block as layer one. On level track this gives four blocks of wire clearance. Gantries in the fourth layer give three blocks. The wire meets the underside of each insulator, including on grades and spans between mounts at different heights.
-- Connect two cantilever towers or two gantries within 16 blocks along a continuous route. The wire follows grades as well as curves. Wires span both branches through turnouts when each branch connects to an appropriate tower. Breaking the rail route or removing a tower cuts power to its span.
+- Connect two cantilever towers or two gantries within 16 blocks along a continuous route. The wire follows grades as well as curves. Wires span both branches through turnouts when each branch connects to an appropriate tower. Breaking the rail route or removing a tower interrupts its span.
+- Open the **Fuel Generator** and put furnace fuel in the fuel slot. Collect empty buckets and other containers from the return slot. Each burn tick generates 40 FE, and the burn pauses at 16,000 FE. The generator pushes or supplies up to 128 FE per tick through its faces.
+- Face the track while placing a **Transformer Bank**. Its front-left foot goes three blocks from the rail centerline, directly opposite a continuous wire. The green placement preview confirms the tap alignment and clearance for the whole bank. The kit occupies a 2×2 footprint and is three blocks tall. Feed its rear face from a generator or another FE source at up to 128 FE per tick. Each bank stores up to 64,000 FE. The side dial reads the circuit's combined charge and the green lamp lights when at least 20 FE is available.
+- Use a **Transmission Pole Extension** on a single- or double-track catenary pole. The I-beam extension adds four blocks to the pole and ends in an insulator. Its tip connects automatically to the nearest clear tip in each cardinal or diagonal direction within 256 blocks horizontally. The high wire stays visible out to the client render limit when the far pole is off-screen. A transformer feeds up to 192 blocks in each direction along the lower contact wire from its tap. Link another transformer through the upper transmission line to extend coverage. Each bank connects to the nearest clear transmission tip within 16 blocks. Crossing routes and the two contact wires on double-track poles have separate taps.
+- Hold any catenary pole, gantry, or transmission extension in either hand to highlight routes within 32 blocks. Green marks continuous wire with at least 20 FE available, orange marks continuous wire without enough charge, and red marks track without continuous wire.
 
 ## Tunnel bore and ballast
 

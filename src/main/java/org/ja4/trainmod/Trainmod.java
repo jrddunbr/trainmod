@@ -14,6 +14,8 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.SoundType;
+import net.minecraft.world.level.block.entity.BlockEntityType;
+import net.minecraft.world.level.material.PushReaction;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
@@ -79,6 +81,23 @@ public final class Trainmod {
         MENUS.register("rail_extruder", () -> new MenuType<>(RailExtruderMenu::new, FeatureFlags.DEFAULT_FLAGS));
     static final DeferredHolder<MenuType<?>, MenuType<BallastRegulatorMenu>> BALLAST_REGULATOR_MENU =
         MENUS.register("ballast_regulator", () -> new MenuType<>(BallastRegulatorMenu::new, FeatureFlags.DEFAULT_FLAGS));
+    static final DeferredBlock<FuelGenerator> FUEL_GENERATOR = BLOCKS.registerBlock("fuel_generator", FuelGenerator::new,
+        p -> p.strength(3.5f).sound(SoundType.METAL));
+    static final DeferredHolder<BlockEntityType<?>, BlockEntityType<FuelGenerator.Machine>> FUEL_GENERATOR_ENTITY =
+        BLOCK_ENTITIES.register("fuel_generator", () -> new BlockEntityType<>(FuelGenerator.Machine::new, FUEL_GENERATOR.get()));
+    static final DeferredHolder<MenuType<?>, MenuType<FuelGeneratorMenu>> FUEL_GENERATOR_MENU =
+        MENUS.register("fuel_generator", () -> new MenuType<>(FuelGeneratorMenu::new, FeatureFlags.DEFAULT_FLAGS));
+    static final DeferredBlock<TransformerBank> TRANSFORMER_BANK = BLOCKS.registerBlock("transformer_bank", TransformerBank::new,
+        p -> p.strength(3.5f).sound(SoundType.METAL).noOcclusion().pushReaction(PushReaction.IMMOVEABLE));
+    static final DeferredHolder<BlockEntityType<?>, BlockEntityType<TransformerBank.Bank>> TRANSFORMER_BANK_ENTITY =
+        BLOCK_ENTITIES.register("transformer_bank", () -> new BlockEntityType<>(TransformerBank.Bank::new, TRANSFORMER_BANK.get()));
+    static final DeferredBlock<TransmissionExtension> TRANSMISSION_EXTENSION =
+        BLOCKS.registerBlock("transmission_extension", TransmissionExtension::new,
+            p -> p.strength(2.5f).sound(SoundType.METAL).noOcclusion().pushReaction(PushReaction.IMMOVEABLE));
+    static final DeferredHolder<BlockEntityType<?>, BlockEntityType<TransmissionExtension.Tip>> TRANSMISSION_TIP =
+        BLOCK_ENTITIES.register("transmission_tip", () -> new BlockEntityType<>(TransmissionExtension.Tip::new, TRANSMISSION_EXTENSION.get()));
+    static final DeferredItem<TransmissionExtension.Kit> TRANSMISSION_KIT = ITEMS.registerItem("transmission_extension",
+        p -> new TransmissionExtension.Kit(TRANSMISSION_EXTENSION.get(), p.useBlockDescriptionPrefix()));
     static final DeferredItem<Item> RAIL = ITEMS.registerSimpleItem("rail");
     static final DeferredItem<Item> TIE_BUNDLE = ITEMS.registerSimpleItem("tie_bundle");
     static final DeferredItem<Item> TRACK_SCRAP = ITEMS.registerSimpleItem("track_scrap");
@@ -158,6 +177,8 @@ public final class Trainmod {
         ITEMS.registerSimpleBlockItem(WREATH);
         ITEMS.registerSimpleBlockItem(WREATH_CRATE);
         ITEMS.registerSimpleBlockItem(RAIL_EXTRUDER);
+        ITEMS.registerSimpleBlockItem(FUEL_GENERATOR);
+        ITEMS.registerItem("transformer_bank", p -> new TransformerBank.Kit(TRANSFORMER_BANK.get(), p.useBlockDescriptionPrefix()));
         ITEMS.registerItem("wide_steel_girder", p -> new WideGirder.Kit(WIDE_STEEL_GIRDER.get(), p.useBlockDescriptionPrefix()));
         ITEMS.registerSimpleBlockItem(STAND);
         var retiredSignal = ITEMS.registerSimpleBlockItem(SIGNAL);
@@ -171,7 +192,7 @@ public final class Trainmod {
         for (TrackGeometry.Kind kind : TrackGeometry.Kind.values()) {
             TRACK.put(kind, BLOCKS.registerBlock(kind.id() + "_rail",
                 p -> kind == TrackGeometry.Kind.SCISSORS_LONG ? new TrackBlock.LongScissors(kind, p)
-                    : kind.parallelTurnout() ? new TrackBlock.ParallelTurnout(kind, p)
+                    : kind.parallelTurnout() || kind.compactTurnout() ? new TrackBlock.CompactableTurnout(kind, p)
                     : kind.turnout() ? new TrackBlock.Turnout(kind, p) : kind.crossing() ? new TrackBlock.Crossing(kind, p)
                     : kind.gradedCurve() ? new TrackBlock.RisingCurve(kind, p) : new TrackBlock(kind, p),
                 p -> p.strength(0.7f).noCollision().noOcclusion().pushReaction(net.minecraft.world.level.material.PushReaction.POPPED)));
@@ -204,6 +225,9 @@ public final class Trainmod {
         bus.addListener(TrainControls::register);
         bus.addListener(BoreTickets::register);
         bus.addListener(RailExtruder::registerCapabilities);
+        bus.addListener(FuelGenerator::registerCapabilities);
+        bus.addListener(TransformerBank::registerCapabilities);
+        bus.addListener(CatenaryOverlay::register);
         bus.addListener((net.neoforged.neoforge.event.entity.EntityAttributeCreationEvent event) ->
             event.put(TREECUTTERS_WORKER.get(), TreecuttersWorker.createAttributes().build()));
         SOUNDS.register(bus);

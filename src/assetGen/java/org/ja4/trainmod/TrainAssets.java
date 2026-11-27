@@ -133,6 +133,7 @@ public final class TrainAssets {
         switchStands();
         bufferStops();
         railExtruder();
+        railPower();
         item("switch_stand", "block/switch_stand_straight");
         item("signal", "block/signal_retired");
         loot("switch_stand", "trainmod:switch_stand");
@@ -157,7 +158,90 @@ public final class TrainAssets {
         write("assets/trainmod/blockstates/rail_extruder.json", Map.of("variants", Map.of("", ref("rail_extruder"))));
         item("rail_extruder", "block/rail_extruder");
         loot("rail_extruder", "trainmod:rail_extruder");
-        write("data/minecraft/tags/block/mineable/pickaxe.json", Map.of("values", List.of("trainmod:rail_extruder")));
+        write("data/minecraft/tags/block/mineable/pickaxe.json", Map.of("values", List.of("trainmod:rail_extruder",
+            "trainmod:fuel_generator", "trainmod:transformer_bank", "trainmod:transmission_extension")));
+    }
+
+    private void railPower() throws IOException {
+        var metal = Map.of("frame", "trainmod:block/cast_iron", "steel", "minecraft:block/iron_block",
+            "copper", "minecraft:block/copper_block", "ceramic", "minecraft:block/smooth_stone",
+            "vent", "minecraft:block/blast_furnace_front", "particle", "trainmod:block/cast_iron");
+        model("fuel_generator", metal, List.of(cube(0, 0, 0, 16, 5, 16, "frame"),
+            cube(0, 5, 0, 16, 16, 16, "steel"), cube(1, 4, -0.5, 15, 14, 0, "vent"),
+            cube(4, 15, 4, 12, 16, 13, "copper")));
+        write("assets/trainmod/blockstates/fuel_generator.json", Map.of("variants", Map.of("", ref("fuel_generator"))));
+        item("fuel_generator", "block/fuel_generator");
+        loot("fuel_generator", "trainmod:fuel_generator");
+
+        Map<String, Object> bank = new LinkedHashMap<>();
+        for (int part = 0; part < 12; part++) {
+            String name = "transformer_bank_" + part;
+            boolean front = (part & 2) == 0;
+            var parts = new ArrayList<Map<String, Object>>();
+            switch (part >> 2) {
+                case 0 -> {
+                    parts.add(cube(0, 0, 0, 16, 4, 16, "ceramic"));
+                    parts.add(cube(2, 4, 2, 14, 16, 14, "frame"));
+                    parts.add(cube(1, 7, 1, 15, 10, 15, "steel"));
+                }
+                case 1 -> {
+                    parts.add(cube(2, 0, 2, 14, 16, 14, "frame"));
+                    for (int y : new int[]{2, 5, 8, 11}) parts.add(cube(1, y, 1, 15, y + 1.5, 15, "steel"));
+                    if (part == 4) {
+                        parts.add(cube(1, 3, 3, 4, 14, 13, "frame"));
+                        parts.add(cube(1, 4, 4, 2, 13, 12, "steel"));
+                    }
+                    if (!front) parts.add(cube(5, 4, 14, 11, 12, 16, "copper"));
+                }
+                case 2 -> {
+                    parts.add(cube(1, 0, 1, 15, 3, 15, "steel"));
+                    parts.add(cube(6, 3, front ? 2 : 8, 10, front ? 14.5 : 15, front ? 6 : 12, "copper"));
+                    for (int y : new int[]{4, 7, 10}) {
+                        parts.add(cube(4, y, front ? 0 : 6, 12, y + 1.7, front ? 8 : 14, "ceramic"));
+                    }
+                }
+            }
+            model(name, metal, parts);
+            for (var facing : net.minecraft.core.Direction.Plane.HORIZONTAL) {
+                bank.put("facing=" + facing.getName() + ",part=" + part,
+                    directionRef(name, 90 * ((facing.get2DDataValue() + 2) % 4)));
+            }
+        }
+        write("assets/trainmod/blockstates/transformer_bank.json", Map.of("variants", bank));
+        model("transformer_bank", metal, List.of(cube(1, 0, 1, 15, 2, 15, "ceramic"),
+            cube(2, 2, 2, 14, 11, 14, "frame"), cube(1.5, 4, 1.5, 14.5, 5, 14.5, "steel"),
+            cube(1.5, 8, 1.5, 14.5, 9, 14.5, "steel"), cube(2, 11, 2, 5, 15, 5, "copper"),
+            cube(11, 11, 2, 14, 15, 5, "copper"), cube(2, 11, 11, 5, 14, 14, "ceramic"),
+            cube(11, 11, 11, 14, 14, 14, "ceramic")));
+        item("transformer_bank", "block/transformer_bank");
+        loot("transformer_bank", "trainmod:transformer_bank");
+
+        String extension = "transmission_extension";
+        var poleMaterials = Map.of("metal", "trainmod:block/catenary_steel", "ceramic", "trainmod:block/catenary_insulator",
+            "copper", "minecraft:block/copper_block", "particle", "trainmod:block/catenary_steel");
+        var base = new ArrayList<>(transmissionBeam(-8, 16));
+        base.add(cube(5.5, 0, 5.5, 10.5, 2, 10.5, "metal"));
+        model(extension + "_base", poleMaterials, base);
+        model(extension + "_shaft", poleMaterials, transmissionBeam(0, 16));
+        var top = new ArrayList<>(transmissionBeam(0, 4));
+        top.add(cube(6.9, 4, 6.9, 9.1, 8.5, 9.1, "ceramic"));
+        for (double y : new double[]{4, 5.5, 7}) top.add(cube(6, y, 6, 10, y + 0.7, 10, "ceramic"));
+        top.add(cube(7.2, 8.5, 7.2, 8.8, 9, 8.8, "copper"));
+        model(extension + "_top", poleMaterials, top);
+        Map<String, Object> extensionStates = new LinkedHashMap<>();
+        for (int part = 0; part <= TransmissionExtension.LEGACY_TOP; part++) {
+            extensionStates.put("part=" + part, ref(extension + (part == 0 ? "_base"
+                : part == TransmissionExtension.TOP || part == TransmissionExtension.LEGACY_TOP ? "_top" : "_shaft")));
+        }
+        write("assets/trainmod/blockstates/" + extension + ".json", Map.of("variants", extensionStates));
+        item(extension, "block/" + extension + "_top");
+        loot(extension, "trainmod:" + extension);
+    }
+
+    private static List<Map<String, Object>> transmissionBeam(double bottom, double top) {
+        return List.of(cube(6.15, bottom, 6.45, 9.85, top, 7, "metal"),
+            cube(7.58, bottom, 7, 8.42, top, 9, "metal"),
+            cube(6.15, bottom, 9, 9.85, top, 9.55, "metal"));
     }
 
     private void infrastructure() throws IOException {
@@ -400,7 +484,9 @@ public final class TrainAssets {
     }
 
     private void catenaryTowers() throws IOException {
-        var steel = Map.of("metal", "trainmod:block/steel_web", "plate", "trainmod:block/steel_head",
+        texture("block/catenary_steel", CatenaryTower.STEEL_COLOR, 16);
+        texture("block/catenary_insulator", CatenaryTower.INSULATOR_COLOR, 16);
+        var steel = Map.of("metal", "trainmod:block/catenary_steel", "plate", "trainmod:block/catenary_insulator",
             "concrete", "minecraft:block/light_gray_concrete", "particle", "minecraft:block/light_gray_concrete");
         for (String id : List.of("catenary_single", "catenary_double", "catenary_gantry")) {
             boolean gantry = id.endsWith("gantry");
@@ -720,6 +806,12 @@ public final class TrainAssets {
         recipe("signal_cabin", 1, List.of("III", "IDI", "III"), Map.of("I", "iron_ingot", "D", "iron_door"));
         recipe("steel_girder", 4, List.of("III", " I ", "III"), Map.of("I", "iron_ingot"));
         recipe("wide_steel_girder", 1, List.of(" T ", "G G"), Map.of("T", "trainmod:tie_bundle", "G", "trainmod:steel_girder"));
+        recipe("fuel_generator", 1, List.of("IRI", "CFC", "III"),
+            Map.of("I", "iron_ingot", "R", "redstone", "C", "copper_ingot", "F", "furnace"));
+        recipe("transformer_bank", 1, List.of("ICI", "CRC", "SSS"),
+            Map.of("I", "iron_block", "C", "copper_ingot", "R", "redstone_block", "S", "smooth_stone"));
+        recipe("transmission_extension", 1, List.of("CIC", " I ", " I "),
+            Map.of("C", "copper_ingot", "I", "iron_ingot"));
         recipe("catenary_single", 2, List.of("IIC", "I  ", "I  "), Map.of("I", "iron_ingot", "C", "copper_ingot"));
         recipe("catenary_double", 2, List.of("CIC", "I I", "I I"), Map.of("I", "iron_ingot", "C", "copper_ingot"));
         recipe("catenary_gantry", 4, List.of("III", " C "), Map.of("I", "iron_ingot", "C", "copper_ingot"));

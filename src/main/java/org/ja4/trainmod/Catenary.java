@@ -27,11 +27,16 @@ final class Catenary {
         }
         double height() { return contact().y; }
     }
-    record Span(Attachment end, double length, List<Vec3> wire) {}
-    private record Step(RailNetwork.Rail rail, double distance, int direction, double walked, List<Vec3> wire, Set<RouteEnd> visited) {}
+    record Section(RailNetwork.Rail rail, double from, double to) {
+        double low() { return Math.min(from, to); }
+        double high() { return Math.max(from, to); }
+    }
+    record Span(Attachment end, double length, List<Vec3> wire, List<Section> sections) {}
+    private record Step(RailNetwork.Rail rail, double distance, int direction, double walked, List<Section> sections,
+                        Set<RouteEnd> visited) {}
     private record RouteEnd(BlockPos root, int route, boolean end) {}
 
-    static boolean powered(Level level, RailNetwork.Position position) {
+    static boolean continuous(Level level, RailNetwork.Position position) {
         if (position == null) return false;
         Vec3 point = position.point();
         RailNetwork.Rail rail = RailNetwork.physicalRailsAt(level, position.rail().root()).stream()
@@ -95,7 +100,7 @@ final class Catenary {
             seated.add(path.get(i).add(0, first + (last - first) * distance / length, 0));
         }
         seated.add(span.end().contact());
-        return new Span(span.end(), span.length(), List.copyOf(seated));
+        return new Span(span.end(), span.length(), List.copyOf(seated), span.sections());
     }
 
     private static Attachment attachment(RailNetwork.Rail rail, BlockPos cell, BlockPos tower,
@@ -115,7 +120,7 @@ final class Catenary {
         return new Attachment(tower, rail, distance, kind.height);
     }
 
-    private static double project(RailNetwork.Rail rail, Vec3 point) {
+    static double project(RailNetwork.Rail rail, Vec3 point) {
         return rail.path().projectHorizontally(point.subtract(rail.origin()));
     }
 
@@ -139,20 +144,23 @@ final class Catenary {
             RouteEnd routeEnd = new RouteEnd(step.rail.root(), step.rail.route(), end);
             if (step.visited.contains(routeEnd)) continue;
             Attachment next = nearest(level, step.rail, step.distance, step.direction, remaining, offset, origin);
-            List<Vec3> wire = collectWire ? new ArrayList<>(step.wire) : List.of();
+            List<Section> sections = collectWire ? new ArrayList<>(step.sections) : List.of();
             if (next != null) {
-                if (collectWire) append(wire, step.rail, step.distance, next.distance(), offset);
-                spans.add(new Span(next, step.walked + Math.abs(next.distance() - step.distance), List.copyOf(wire)));
+                if (step.rail.blocks(step.distance, next.distance())) continue;
+                if (collectWire) sections.add(new Section(step.rail, step.distance, next.distance()));
+                List<Vec3> wire = new ArrayList<>();
+                for (Section section : sections) append(wire, section.rail, section.from, section.to, offset);
+                spans.add(new Span(next, step.walked + Math.abs(next.distance() - step.distance), List.copyOf(wire), List.copyOf(sections)));
                 continue;
             }
             double limit = end ? step.rail.path().length : 0;
             double walked = step.walked + Math.abs(limit - step.distance);
-            if (walked > SPAN_LIMIT) continue;
-            if (collectWire) append(wire, step.rail, step.distance, limit, offset);
+            if (walked > SPAN_LIMIT || step.rail.blocks(step.distance, limit)) continue;
+            if (collectWire) sections.add(new Section(step.rail, step.distance, limit));
             Set<RouteEnd> visited = new HashSet<>(step.visited);
             visited.add(routeEnd);
             for (var adjacent : RailNetwork.physicalConnections(level, step.rail, end)) {
-                queue.add(new Step(adjacent.rail(), adjacent.distance(), adjacent.forward(), walked, wire, visited));
+                queue.add(new Step(adjacent.rail(), adjacent.distance(), adjacent.forward(), walked, sections, visited));
             }
         }
         return spans;
@@ -179,7 +187,7 @@ final class Catenary {
         if (offset == CatenaryTower.Kind.GANTRY.height) {
             for (int mount : new int[]{offset, offset - 1}) {
                 BlockPos tower = cell.above(mount);
-                if (!tower.equals(origin) && level.getBlockState(tower).is(Trainmod.CATENARY_GANTRY.get())
+                if (!tower.equals(origin) && level.isLoaded(tower) && level.getBlockState(tower).is(Trainmod.CATENARY_GANTRY.get())
                     && gantryMount(level, tower) == mount) {
                     return attachment(rail, cell, tower, CatenaryTower.Kind.GANTRY, 1, false);
                 }

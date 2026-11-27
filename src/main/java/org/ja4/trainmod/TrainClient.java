@@ -129,6 +129,7 @@ public final class TrainClient {
     @SubscribeEvent
     static void registerScreens(net.neoforged.neoforge.client.event.RegisterMenuScreensEvent event) {
         event.register(Trainmod.RAIL_EXTRUDER_MENU.get(), RailExtruderScreen::new);
+        event.register(Trainmod.FUEL_GENERATOR_MENU.get(), FuelGeneratorScreen::new);
         event.register(Trainmod.BALLAST_REGULATOR_MENU.get(), BallastRegulatorScreen::new);
     }
 
@@ -142,6 +143,7 @@ public final class TrainClient {
         event.registerBlockEntityRenderer(Trainmod.SWITCH_POINTS.get(), context -> new SwitchPointRenderer());
         event.registerBlockEntityRenderer(Trainmod.SWITCH_STAND.get(), context -> new SwitchStandRenderer());
         event.registerBlockEntityRenderer(Trainmod.CATENARY_ANCHOR.get(), context -> new CatenaryRenderer());
+        event.registerBlockEntityRenderer(Trainmod.TRANSFORMER_BANK_ENTITY.get(), context -> new RailPowerRenderer.BankRenderer());
     }
 
     @SubscribeEvent
@@ -244,6 +246,7 @@ public final class TrainClient {
         float rightDoorProgress;
         float handbrakeAngle;
         float wheelPhase;
+        final float[] pantographHeights = new float[2];
         float boreTireExtension;
         int headlight;
         boolean treecuttersActive;
@@ -304,6 +307,8 @@ public final class TrainClient {
         private final MetricEntityModel drawbar;
         private final List<VehicleModels.Wheel> wheels;
         private final Map<Integer, ModelPart> boreRoadGear;
+        private final MetricEntityModel pantographArm;
+        private final Map<Integer, ModelPart> pantographHead;
         private final List<Map<Integer, ModelPart>> wheelParts;
         private final Map<Integer, ModelPart> rods;
         private final MetricEntityModel piston;
@@ -329,6 +334,12 @@ public final class TrainClient {
             doorTravel = kind == TrainVehicle.Kind.BOXCAR ? VehicleModels.OPEN_DOOR_SHIFT * kind.length / 40 : 0;
             bulkSurface = kind == TrainVehicle.Kind.GONDOLA || kind == TrainVehicle.Kind.BALLAST_CAR ? bulkSurface(kind) : null;
             wheels = kind == TrainVehicle.Kind.STEAM_LOCOMOTIVE ? VehicleModels.steamWheels(kind) : List.of();
+            pantographArm = kind == TrainVehicle.Kind.ELECTRIC_SHUNTER ? metric(bakeVehicleCubes(List.of(
+                new VehicleModels.Box(0x9b9891, -0.36f, -0.36f, 0, 0.72f, 0.72f, 16))).get(0x9b9891)) : null;
+            pantographHead = kind == TrainVehicle.Kind.ELECTRIC_SHUNTER ? bakeVehicleCubes(List.of(
+                new VehicleModels.Box(0x3c3531, (float) (-16 * Pantographs.HALF_HEAD), -0.48f, -0.55f,
+                    (float) (32 * Pantographs.HALF_HEAD), 0.48f, 1.1f),
+                new VehicleModels.Box(0x76736e, -3.7f, -0.95f, -1.15f, 7.4f, 0.47f, 2.3f))) : Map.of();
             boreRoadGear = kind == TrainVehicle.Kind.TUNNEL_BORE ? bakeVehicleCubes(VehicleModels.boreRoadGear()) : Map.of();
             wheelParts = wheels.stream().map(wheel -> bakeVehicleCubes(wheel.boxes())).toList();
             rods = wheels.isEmpty() ? Map.of() : bakeVehicleCubes(VehicleModels.steamRods(kind));
@@ -385,6 +396,9 @@ public final class TrainClient {
                 state.rightDoorProgress = train.doorProgress(false, partial);
                 state.handbrakeAngle = train.handbrakeAngle(partial);
                 state.wheelPhase = train.wheelPhase(partial);
+                for (int head = 0; pantographArm != null && head < 2; head++) {
+                    state.pantographHeights[head] = train.pantographHeight(head, partial);
+                }
                 state.boreTireExtension = train.boreTireExtension(partial);
                 state.headlight = train.headlight();
                 state.treecuttersActive = train.treecuttersActive();
@@ -413,6 +427,7 @@ public final class TrainClient {
         @Override
         protected AABB getBoundingBoxForCulling(T entity, float partial) {
             AABB bounds = super.getBoundingBoxForCulling(entity, partial).inflate(0.5);
+            if (pantographArm != null) return bounds.expandTowards(0, 3.4, 0);
             if (entity instanceof TrainVehicle train && train.freightLoad().hasModel()) {
                 return bounds.expandTowards(0, 1.45, 0);
             }
@@ -427,6 +442,7 @@ public final class TrainClient {
             pose.rotateDegrees(Axis.XP, state.pitch);
             pose.rotateDegrees(Axis.ZP, (float) Math.toDegrees(Math.atan(state.bank)));
             submitParts(groups, state, pose, collector);
+            if (pantographArm != null) submitPantographs(state, pose, collector);
             if (!wheels.isEmpty()) submitSteamGear(state, pose, collector);
             if (!boreRoadGear.isEmpty()) {
                 pose.pushPose();
@@ -523,6 +539,37 @@ public final class TrainClient {
             pose.pushPose();
             pose.translate(0, 0, progress * doorTravel);
             submitParts(parts, state, pose, collector);
+            pose.popPose();
+        }
+
+        private void submitPantographs(VehicleState state, PoseStack pose, SubmitNodeCollector collector) {
+            for (int head = 0; head < 2; head++) {
+                double roof = Pantographs.roof(head) + 0.07;
+                double height = state.pantographHeights[head];
+                double z = Pantographs.longitudinal(head);
+                double fold = (head == 0 ? 1 : -1) * Math.clamp(0.42 - (height - roof) * 0.12, 0.08, 0.39);
+                for (double x : new double[]{-0.21, 0.21}) {
+                    Vec3 base = new Vec3(x, roof, z);
+                    Vec3 knee = new Vec3(x, (roof + height) / 2, z + fold);
+                    Vec3 shoe = new Vec3(x, height - 0.05, z);
+                    submitPantographArm(base, knee, state, pose, collector);
+                    submitPantographArm(knee, shoe, state, pose, collector);
+                }
+                pose.pushPose();
+                pose.translate(0, height, z);
+                submitParts(pantographHead, state, pose, collector);
+                pose.popPose();
+            }
+        }
+
+        private void submitPantographArm(Vec3 from, Vec3 to, VehicleState state, PoseStack pose, SubmitNodeCollector collector) {
+            Vec3 delta = to.subtract(from);
+            pose.pushPose();
+            pose.translate(from.x, from.y, from.z);
+            pose.rotateDegrees(Axis.YP, delta.z < 0 ? 180 : 0);
+            pose.rotateDegrees(Axis.XP, (float) -Math.toDegrees(Math.atan2(delta.y, Math.abs(delta.z))));
+            collector.submitModelPart(pantographArm.animatedLength(delta.length()), pose, MATERIAL, state.lightCoords,
+                OverlayTexture.NO_OVERLAY, null, 0xff9b9891, state.outlineColor);
             pose.popPose();
         }
 
